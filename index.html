@@ -1,0 +1,1875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Autoencofabulator — ConsciousNode SoftWorks</title>
+<style>
+/*
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║ AUTOENCOFABULATOR v0.1 — ConsciousNode SoftWorks                    ║
+  ║ Kham (Khamerron Ramsey Kizer) · Ed Interim                          ║
+  ║                                                                      ║
+  ║ A browser-native diffusion model. Trains on your files.             ║
+  ║ Generates new ones. Never leaves the browser.                       ║
+  ║                                                                      ║
+  ║ ScoreNet: BitLinear / LayerNorm / Adam — from Simulacra             ║
+  ║ AdaLN: conditioning pattern — from OmniVocal                        ║
+  ║ Validation: magic bytes / ROSA / Shannon — from Once Bytten         ║
+  ║ Diffusion: DDPM (Ho et al. 2020) — browser-native, zero deps        ║
+  ║                                                                      ║
+  ║ Xinu-compliant. Zero dependencies. Single file. MIT License.        ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+*/
+
+:root {
+  --void:      #07060f;
+  --surface:   #100e1e;
+  --panel:     #17152a;
+  --border:    #2a2545;
+  --border-hi: #3d3770;
+  --text:      #e2deff;
+  --text-dim:  #7a72b0;
+  --text-muted:#3d3760;
+  --accent:    #7c5cfc;
+  --accent-hi: #a07fff;
+  --accent-lo: #3d2d8a;
+  --signal:    #2de0a5;
+  --signal-lo: #0d5c42;
+  --warn:      #f0a500;
+  --danger:    #ff3b6e;
+  --danger-lo: #5a0d22;
+  --mono:      'Courier New', Courier, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: var(--void);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* scanline */
+body::after {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px
+  );
+  pointer-events: none; z-index: 9999;
+}
+
+/* noise overlay */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none; z-index: 9998; opacity: 0.4;
+}
+
+#app {
+  display: flex; flex-direction: column;
+  width: 100%; height: 100%;
+}
+
+/* ── HEADER ────────────────────────────────────────────────────────── */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 12px;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-shrink: 0; gap: 8px; flex-wrap: wrap;
+}
+
+.logo {
+  display: flex; align-items: baseline; gap: 6px; flex-shrink: 0;
+}
+
+.logo-name {
+  font-size: 13px; font-weight: bold; letter-spacing: 0.08em;
+  color: var(--accent-hi);
+  text-shadow: 0 0 12px rgba(124,92,252,0.5);
+}
+
+.logo-ver {
+  font-size: 10px; color: var(--text-dim); letter-spacing: 0.1em;
+}
+
+.logo-tag {
+  font-size: 9px; color: var(--text-muted);
+  border: 1px solid var(--border); padding: 1px 5px;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 420px) {
+  .logo-tag { display: none; }
+}
+
+.header-stats {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+
+.stat {
+  font-size: 10px; color: var(--text-dim);
+  background: var(--panel); border: 1px solid var(--border);
+  padding: 2px 7px; white-space: nowrap;
+}
+.stat span { color: var(--signal); }
+
+/* ── TABS ──────────────────────────────────────────────────────────── */
+.tabbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex; gap: 2px; padding: 0 12px;
+  flex-shrink: 0;
+}
+
+.tab {
+  padding: 8px 16px; font-size: 11px; letter-spacing: 0.1em;
+  color: var(--text-dim); cursor: pointer; border: none;
+  background: none; text-transform: uppercase;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent-hi); border-bottom-color: var(--accent); }
+
+/* ── MAIN LAYOUT ───────────────────────────────────────────────────── */
+.main {
+  flex: 1; overflow: hidden;
+  display: flex;
+}
+
+.pane {
+  display: none; flex: 1; overflow-y: auto;
+  padding: 16px; gap: 14px;
+  flex-direction: column;
+}
+.pane.active { display: flex; }
+
+/* ── PANELS ────────────────────────────────────────────────────────── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 14px;
+}
+
+.panel-title {
+  font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: 12px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+
+/* ── DROP ZONE ─────────────────────────────────────────────────────── */
+#drop-zone {
+  border: 1px dashed var(--border-hi);
+  padding: 28px 16px; text-align: center;
+  color: var(--text-dim); cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: var(--panel);
+}
+
+#drop-zone:hover, #drop-zone.drag-over {
+  border-color: var(--accent); background: rgba(124,92,252,0.06);
+  color: var(--text);
+}
+
+#drop-zone .drop-icon {
+  font-size: 28px; display: block; margin-bottom: 8px; opacity: 0.5;
+}
+
+#drop-zone .drop-hint {
+  font-size: 11px; letter-spacing: 0.05em;
+}
+
+#drop-zone .drop-formats {
+  font-size: 10px; color: var(--text-muted); margin-top: 6px;
+  letter-spacing: 0.08em;
+}
+
+/* ── FILE LIST ─────────────────────────────────────────────────────── */
+#file-list { display: flex; flex-direction: column; gap: 4px; }
+
+.file-entry {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel); padding: 6px 10px;
+  border: 1px solid var(--border); font-size: 11px;
+}
+
+.file-entry .fname { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-entry .fsize { color: var(--text-muted); }
+.file-entry .fbadge {
+  padding: 1px 6px; font-size: 10px; letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.badge-txt { background: rgba(45,224,165,0.15); color: var(--signal); border: 1px solid var(--signal-lo); }
+.badge-html { background: rgba(124,92,252,0.15); color: var(--accent-hi); border: 1px solid var(--accent-lo); }
+.badge-bmp { background: rgba(240,165,0,0.15); color: var(--warn); border: 1px solid #5a3e00; }
+.badge-wav { background: rgba(255,59,110,0.15); color: var(--danger); border: 1px solid var(--danger-lo); }
+.badge-skip { background: rgba(61,55,96,0.3); color: var(--text-muted); border: 1px solid var(--border); }
+
+.file-entry .fstatus { font-size: 10px; color: var(--text-muted); }
+.file-entry .fstatus.ok { color: var(--signal); }
+.file-entry .fstatus.bad { color: var(--danger); }
+.file-entry .fclose { cursor: pointer; color: var(--text-muted); padding: 0 4px; }
+.file-entry .fclose:hover { color: var(--danger); }
+
+/* ── CONTROLS ──────────────────────────────────────────────────────── */
+.ctrl-row {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+}
+
+.btn {
+  padding: 7px 16px; font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; cursor: pointer;
+  border: 1px solid var(--border-hi); background: var(--panel);
+  color: var(--text); font-family: var(--mono);
+  transition: all 0.12s;
+}
+
+.btn:hover { border-color: var(--accent); color: var(--accent-hi); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--border-hi); color: var(--text); }
+
+.btn-primary {
+  background: var(--accent-lo); border-color: var(--accent);
+  color: var(--accent-hi);
+}
+.btn-primary:hover { background: rgba(124,92,252,0.25); }
+
+.btn-signal {
+  background: var(--signal-lo); border-color: var(--signal);
+  color: var(--signal);
+}
+.btn-signal:hover { background: rgba(45,224,165,0.2); }
+
+.btn-danger {
+  background: var(--danger-lo); border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* ── LOSS CANVAS ───────────────────────────────────────────────────── */
+#loss-canvas {
+  width: 100%; height: 80px;
+  background: var(--panel); border: 1px solid var(--border);
+  display: block;
+}
+
+.loss-row {
+  display: flex; justify-content: space-between;
+  font-size: 10px; color: var(--text-muted); margin-top: 4px;
+}
+
+.loss-val { color: var(--signal); font-size: 12px; }
+
+/* ── TRAINING STATUS ───────────────────────────────────────────────── */
+#train-status {
+  font-size: 11px; padding: 8px 10px;
+  background: var(--panel); border: 1px solid var(--border);
+  color: var(--text-dim); letter-spacing: 0.04em;
+}
+#train-status.running { color: var(--signal); border-color: var(--signal-lo); }
+#train-status.paused { color: var(--warn); border-color: #5a3e00; }
+
+/* ── GENERATE FORM ─────────────────────────────────────────────────── */
+.form-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+}
+
+.form-label {
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-dim); min-width: 80px;
+}
+
+.form-input, .form-select {
+  background: var(--panel); border: 1px solid var(--border);
+  color: var(--text); padding: 6px 10px; font-family: var(--mono);
+  font-size: 12px; flex: 1;
+}
+
+.form-input:focus, .form-select:focus {
+  outline: none; border-color: var(--accent);
+}
+
+.form-select option { background: var(--panel); }
+
+.size-controls { display: flex; gap: 8px; flex: 1; }
+.size-controls .form-input { flex: 1; }
+
+/* ── PROGRESS BAR ──────────────────────────────────────────────────── */
+.progress-wrap {
+  background: var(--panel); border: 1px solid var(--border);
+  height: 4px; overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%; background: var(--accent);
+  width: 0%; transition: width 0.1s linear;
+}
+
+/* ── OUTPUT PREVIEW ────────────────────────────────────────────────── */
+#output-preview {
+  background: var(--panel); border: 1px solid var(--border);
+  min-height: 80px; padding: 10px;
+  font-size: 11px; color: var(--text-dim);
+  overflow: auto; max-height: 200px;
+  white-space: pre-wrap; word-break: break-all;
+}
+
+#bmp-preview-canvas {
+  display: none;
+  max-width: 100%; border: 1px solid var(--border);
+  image-rendering: pixelated;
+}
+
+/* ── VALIDATE ──────────────────────────────────────────────────────── */
+.check-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.check-row:last-child { border-bottom: none; }
+.check-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+.check-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.check-value { font-size: 11px; color: var(--text); margin-top: 2px; }
+
+.verdict {
+  padding: 10px 14px; font-size: 13px; letter-spacing: 0.1em;
+  text-align: center; text-transform: uppercase; font-weight: bold;
+  margin-top: 8px;
+}
+.verdict-pass { background: var(--signal-lo); color: var(--signal); border: 1px solid var(--signal); }
+.verdict-warn { background: rgba(240,165,0,0.1); color: var(--warn); border: 1px solid var(--warn); }
+.verdict-fail { background: var(--danger-lo); color: var(--danger); border: 1px solid var(--danger); }
+.verdict-none { background: var(--panel); color: var(--text-muted); border: 1px solid var(--border); }
+
+/* ── MODEL STATUS ──────────────────────────────────────────────────── */
+.model-stat-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.model-stat {
+  background: var(--panel); border: 1px solid var(--border);
+  padding: 8px 10px;
+}
+.model-stat-key { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
+.model-stat-val { font-size: 13px; color: var(--accent-hi); margin-top: 3px; }
+
+/* ── CREDIT ────────────────────────────────────────────────────────── */
+footer {
+  background: var(--surface); border-top: 1px solid var(--border);
+  padding: 4px 12px; font-size: 9px; color: var(--text-muted);
+  letter-spacing: 0.05em; display: flex; justify-content: space-between;
+  flex-shrink: 0; flex-wrap: wrap; gap: 2px;
+}
+footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">
+      <span class="logo-name">AUTOENCOFABULATOR</span>
+      <span class="logo-ver">v0.1</span>
+      <span class="logo-tag">XINU</span>
+      <span class="logo-tag">ZERO DEPS</span>
+    </div>
+    <div class="header-stats">
+      <div class="stat">steps <span id="h-steps">0</span></div>
+      <div class="stat">loss <span id="h-loss">—</span></div>
+      <div class="stat">corpus <span id="h-corpus">0</span> chunks</div>
+    </div>
+  </header>
+
+  <div class="tabbar">
+    <button class="tab active" onclick="switchTab('train')">▶ Train</button>
+    <button class="tab" onclick="switchTab('generate')">✦ Generate</button>
+    <button class="tab" onclick="switchTab('validate')">⬡ Validate</button>
+    <button class="tab" onclick="switchTab('model')">◈ Model</button>
+  </div>
+
+  <div class="main">
+
+    <!-- ── TRAIN ── -->
+    <div class="pane active" id="pane-train">
+      <div class="panel">
+        <div class="panel-title">Training Corpus</div>
+        <div id="drop-zone">
+          <span class="drop-icon">⬇</span>
+          <div class="drop-hint">Drop files here to add to corpus</div>
+          <div class="drop-formats">TXT · HTML · BMP · WAV</div>
+        </div>
+        <div id="file-list" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Training</div>
+        <div id="train-status">Ready. Add files and press START.</div>
+        <div style="margin-top:8px;">
+          <canvas id="loss-canvas" width="800" height="80"></canvas>
+          <div class="loss-row">
+            <span>Step loss</span>
+            <span class="loss-val" id="loss-val">—</span>
+          </div>
+        </div>
+        <div class="ctrl-row" style="margin-top:10px;">
+          <button class="btn btn-primary" id="btn-start" onclick="startTraining()">Start</button>
+          <button class="btn" id="btn-pause" onclick="pauseTraining()" disabled>Pause</button>
+          <button class="btn btn-danger" id="btn-reset" onclick="resetModel()">Reset Model</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── GENERATE ── -->
+    <div class="pane" id="pane-generate">
+      <div class="panel">
+        <div class="panel-title">Generation Parameters</div>
+
+        <div class="form-row">
+          <span class="form-label">Format</span>
+          <select class="form-select" id="gen-format" onchange="updateSizeControls()">
+            <option value="0">TXT — Plain Text</option>
+            <option value="1">HTML — Single-file artifact</option>
+            <option value="2">BMP — Bitmap image</option>
+            <option value="3">WAV — Audio (PCM)</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <span class="form-label">Tags</span>
+          <input class="form-input" id="gen-tags" type="text"
+            placeholder="upbeat, jazz, minimal, dark, calculator...">
+        </div>
+
+        <div class="form-row" id="size-row-text">
+          <span class="form-label">Length</span>
+          <div class="size-controls">
+            <input class="form-input" id="gen-chars" type="number"
+              value="512" min="64" max="4096" step="64">
+            <span style="align-self:center;color:var(--text-dim);font-size:11px;">chars</span>
+          </div>
+        </div>
+
+        <div class="form-row" id="size-row-bmp" style="display:none;">
+          <span class="form-label">Dimensions</span>
+          <div class="size-controls">
+            <input class="form-input" id="gen-bmp-w" type="number" value="64" min="16" max="256" step="8">
+            <span style="align-self:center;color:var(--text-dim);">×</span>
+            <input class="form-input" id="gen-bmp-h" type="number" value="64" min="16" max="256" step="8">
+            <span style="align-self:center;color:var(--text-dim);font-size:11px;">px</span>
+          </div>
+        </div>
+
+        <div class="form-row" id="size-row-wav" style="display:none;">
+          <span class="form-label">Duration</span>
+          <div class="size-controls">
+            <input class="form-input" id="gen-wav-dur" type="number" value="2" min="0.5" max="10" step="0.5">
+            <span style="align-self:center;color:var(--text-dim);font-size:11px;">sec</span>
+            <select class="form-select" id="gen-wav-sr" style="flex:1;">
+              <option value="22050">22050 Hz</option>
+              <option value="44100">44100 Hz</option>
+              <option value="8000">8000 Hz</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <span class="form-label">Steps</span>
+          <div class="size-controls">
+            <input class="form-input" id="gen-steps" type="number" value="100" min="20" max="200" step="10">
+            <span style="align-self:center;color:var(--text-dim);font-size:11px;">/ 200 max</span>
+          </div>
+        </div>
+
+        <div class="ctrl-row" style="margin-top:10px;">
+          <button class="btn btn-signal" id="btn-generate" onclick="runGeneration()">Generate</button>
+        </div>
+
+        <div class="progress-wrap" style="margin-top:10px;">
+          <div class="progress-bar" id="gen-progress"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Output</div>
+        <canvas id="bmp-preview-canvas"></canvas>
+        <div id="output-preview">No output yet. Train the model and press Generate.</div>
+        <div class="ctrl-row" style="margin-top:10px;">
+          <button class="btn" id="btn-download" onclick="downloadOutput()" disabled>Download</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── VALIDATE ── -->
+    <div class="pane" id="pane-validate">
+      <div class="panel">
+        <div class="panel-title">Validation Results</div>
+        <div id="validate-checks">
+          <div style="color:var(--text-muted);font-size:11px;">Generate a file to run validation.</div>
+        </div>
+        <div id="validate-verdict" class="verdict verdict-none">No output</div>
+      </div>
+    </div>
+
+    <!-- ── MODEL ── -->
+    <div class="pane" id="pane-model">
+      <div class="panel">
+        <div class="panel-title">Model Statistics</div>
+        <div class="model-stat-grid">
+          <div class="model-stat"><div class="model-stat-key">Total Steps</div><div class="model-stat-val" id="m-steps">0</div></div>
+          <div class="model-stat"><div class="model-stat-key">Parameters</div><div class="model-stat-val" id="m-params">—</div></div>
+          <div class="model-stat"><div class="model-stat-key">Corpus Chunks</div><div class="model-stat-val" id="m-chunks">0</div></div>
+          <div class="model-stat"><div class="model-stat-key">Best Loss</div><div class="model-stat-val" id="m-bestloss">—</div></div>
+          <div class="model-stat"><div class="model-stat-key">Timesteps T</div><div class="model-stat-val">200</div></div>
+          <div class="model-stat"><div class="model-stat-key">Chunk Size</div><div class="model-stat-val">256</div></div>
+          <div class="model-stat"><div class="model-stat-key">Hidden Dim</div><div class="model-stat-val">512</div></div>
+          <div class="model-stat"><div class="model-stat-key">Learn Rate</div><div class="model-stat-val">1e-4</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Architecture</div>
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.8;">
+          <div>Input: chunk[256] + t_emb[64] + fmt_emb[16] + sem_emb[32] = <span style="color:var(--accent-hi)">368-dim</span></div>
+          <div>LayerNorm → Linear(368→512) → AdaLN(cond[48]) → SiLU</div>
+          <div>LayerNorm → Linear(512→512) → SiLU</div>
+          <div>LayerNorm → Linear(512→256) → predicted noise</div>
+          <div style="margin-top:6px;">Optimizer: <span style="color:var(--signal)">Adam</span> (β₁=0.9, β₂=0.999, ε=1e-8)</div>
+          <div>Schedule: <span style="color:var(--signal)">Linear DDPM</span> (β₁=1e-4 → β_T=0.02, T=200)</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Weights</div>
+        <div class="ctrl-row">
+          <button class="btn" onclick="exportWeights()">Export .fabula</button>
+          <button class="btn" onclick="document.getElementById('import-input').click()">Import .fabula</button>
+        </div>
+        <input type="file" id="import-input" accept=".fabula,.json" style="display:none"
+          onchange="importWeights(this.files[0])">
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <span>Autoencofabulator v0.1 · ConsciousNode SoftWorks · Kham (Khamerron Ramsey Kizer) · Ed Interim · MIT License</span>
+    <span>ScoreNet from Simulacra · AdaLN from OmniVocal · Validation from Once Bytten · DDPM (Ho et al. 2020)</span>
+  </footer>
+</div>
+
+<script>
+'use strict';
+
+// ════════════════════════════════════════════════════════════════════
+// CONFIG
+// ════════════════════════════════════════════════════════════════════
+const CFG = {
+  T:          200,
+  CHUNK:      256,
+  HID:        512,
+  FMT_DIM:    16,
+  SEM_DIM:    32,
+  T_DIM:      64,
+  N_FORMATS:  4,
+  VOCAB:      256,
+  LR:         1e-4,
+  BETA_START: 1e-4,
+  BETA_END:   0.02,
+  YIELD_EVERY: 8,
+  MAX_RESAMPLE: 3,
+};
+
+const FORMAT = { TXT:0, HTML:1, BMP:2, WAV:3 };
+const FMT_NAME = ['txt','html','bmp','wav'];
+
+// ════════════════════════════════════════════════════════════════════
+// SEMANTIC VOCABULARY (256 common descriptive words)
+// ════════════════════════════════════════════════════════════════════
+const VOCAB_WORDS = [
+  'upbeat','dark','moody','bright','intense','gentle','calm','aggressive','playful','mysterious',
+  'melancholy','energetic','peaceful','tense','joyful','somber','dreamy','urgent','whimsical','stark',
+  'red','green','blue','yellow','purple','orange','teal','white','black','gray',
+  'pink','cyan','magenta','brown','gold','silver','warm','cool','vivid','muted',
+  'bass','treble','jazz','classical','electronic','ambient','percussion','melody','rhythm','noise',
+  'drone','glitch','folk','punk','orchestral','synthesized','acoustic','distorted','clean','reverb',
+  'formal','casual','technical','poetic','narrative','descriptive','analytical','conversational','terse','verbose',
+  'calculator','game','form','visualizer','dashboard','tool','app','art','animation','interactive',
+  'clock','timer','converter','editor','viewer','player','recorder','generator','simulator','tracker',
+  'minimal','complex','dense','sparse','simple','detailed','layered','flat','structured','freeform',
+  'retro','modern','futuristic','vintage','geometric','organic','abstract','concrete','digital','analog',
+  'fast','slow','short','long','large','small','compact','expansive','brief','extended',
+  'sharp','smooth','rough','precise','approximate','clean','noisy','crisp','fuzzy','clear',
+  'looping','evolving','static','dynamic','random','ordered','chaotic','harmonic','dissonant','resonant',
+  'mono','stereo','low','mid','high','major','minor','atonal','modal','chromatic',
+  'square','sine','sawtooth','triangle','pulse','granular','spectral','wavelet','filtered','modulated',
+  'sparse','rich','thin','thick','hollow','solid','liquid','rigid','flowing','frozen',
+  'broken','intact','corrupt','pristine','ancient','fresh','worn','new','raw','finished',
+  'error','success','warning','info','debug','log','trace','signal','noise','data',
+  'matrix','vector','scalar','tensor','gradient','kernel','manifold','embedding','latent','space',
+  'pixel','byte','bit','hex','binary','ascii','unicode','utf','stream','buffer',
+  'recursive','iterative','functional','imperative','reactive','declarative','async','sync','parallel','serial',
+  'network','local','remote','cached','live','snapshot','delta','diff','patch','merge',
+  'linear','circular','spiral','fractal','random','periodic','aperiodic','stochastic','deterministic','chaotic',
+  'heavy','light','dense','airy','deep','shallow','wide','narrow','tall','short',
+  'electric','acoustic','magnetic','optical','thermal','mechanical','chemical','quantum','classical','digital',
+];
+
+function tagToIds(tagStr) {
+  if (!tagStr.trim()) return [];
+  const tags = tagStr.toLowerCase().split(/[\s,]+/).filter(Boolean);
+  const ids = [];
+  for (const t of tags) {
+    const idx = VOCAB_WORDS.indexOf(t);
+    if (idx >= 0) ids.push(idx);
+    else {
+      // Hash unknown words into range
+      let h = 0;
+      for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) & 0x7FFFFFFF;
+      ids.push(h % CFG.VOCAB);
+    }
+  }
+  return [...new Set(ids)];
+}
+
+// ════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ════════════════════════════════════════════════════════════════════
+function randn() {
+  return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
+}
+
+function yieldToMain() {
+  return new Promise(r => setTimeout(r, 0));
+}
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + 'B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + 'KB';
+  return (bytes/1024/1024).toFixed(2) + 'MB';
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ML PRIMITIVES
+// ════════════════════════════════════════════════════════════════════
+
+class Linear {
+  constructor(inDim, outDim) {
+    this.inDim  = inDim;
+    this.outDim = outDim;
+    this.weight = new Float32Array(outDim * inDim);
+    this.bias   = new Float32Array(outDim);
+    this.gradW  = new Float32Array(outDim * inDim);
+    this.gradB  = new Float32Array(outDim);
+    this._lastIn = null;
+
+    const scale = Math.sqrt(2 / (inDim + outDim));
+    for (let i = 0; i < this.weight.length; i++)
+      this.weight[i] = (Math.random() * 2 - 1) * scale;
+  }
+
+  forward(x) {
+    this._lastIn = x;
+    const out = new Float32Array(this.outDim);
+    for (let o = 0; o < this.outDim; o++) {
+      let s = this.bias[o];
+      const row = o * this.inDim;
+      for (let i = 0; i < this.inDim; i++) s += this.weight[row + i] * x[i];
+      out[o] = s;
+    }
+    return out;
+  }
+
+  backward(gradOut) {
+    const x    = this._lastIn;
+    const gradIn = new Float32Array(this.inDim);
+    for (let o = 0; o < this.outDim; o++) {
+      const row = o * this.inDim;
+      const g   = gradOut[o];
+      this.gradB[o] += g;
+      for (let i = 0; i < this.inDim; i++) {
+        this.gradW[row + i] += g * x[i];
+        gradIn[i]           += g * this.weight[row + i];
+      }
+    }
+    return gradIn;
+  }
+
+  zeroGrad() { this.gradW.fill(0); this.gradB.fill(0); }
+
+  params() {
+    return [
+      { w: this.weight, g: this.gradW },
+      { w: this.bias,   g: this.gradB },
+    ];
+  }
+}
+
+class LayerNorm {
+  constructor(dim) {
+    this.dim    = dim;
+    this.weight = new Float32Array(dim).fill(1);
+    this.bias   = new Float32Array(dim).fill(0);
+    this.gradW  = new Float32Array(dim);
+    this.gradB  = new Float32Array(dim);
+    this._xn    = null;
+    this._std   = 1;
+  }
+
+  forward(x) {
+    let mean = 0;
+    for (let i = 0; i < this.dim; i++) mean += x[i];
+    mean /= this.dim;
+
+    let variance = 0;
+    for (let i = 0; i < this.dim; i++) variance += (x[i] - mean) ** 2;
+    variance /= this.dim;
+
+    this._std = Math.sqrt(variance + 1e-5);
+    const xn  = new Float32Array(this.dim);
+    const out = new Float32Array(this.dim);
+    for (let i = 0; i < this.dim; i++) {
+      xn[i]  = (x[i] - mean) / this._std;
+      out[i] = this.weight[i] * xn[i] + this.bias[i];
+    }
+    this._xn = xn;
+    return out;
+  }
+
+  backward(gradOut) {
+    const N   = this.dim;
+    const std = this._std;
+    const xn  = this._xn;
+    const gxn = new Float32Array(N);
+    let sumGxn = 0, sumGxnXn = 0;
+
+    for (let i = 0; i < N; i++) {
+      this.gradW[i] += gradOut[i] * xn[i];
+      this.gradB[i] += gradOut[i];
+      gxn[i]         = gradOut[i] * this.weight[i];
+      sumGxn        += gxn[i];
+      sumGxnXn      += gxn[i] * xn[i];
+    }
+
+    const gradIn = new Float32Array(N);
+    for (let i = 0; i < N; i++)
+      gradIn[i] = (gxn[i] - sumGxn / N - xn[i] * sumGxnXn / N) / std;
+
+    return gradIn;
+  }
+
+  zeroGrad() { this.gradW.fill(0); this.gradB.fill(0); }
+
+  params() {
+    return [
+      { w: this.weight, g: this.gradW },
+      { w: this.bias,   g: this.gradB },
+    ];
+  }
+}
+
+function silu(x) {
+  const out = new Float32Array(x.length);
+  for (let i = 0; i < x.length; i++) out[i] = x[i] / (1 + Math.exp(-x[i]));
+  return out;
+}
+
+function siluGrad(preAct, gradOut) {
+  const g = new Float32Array(preAct.length);
+  for (let i = 0; i < preAct.length; i++) {
+    const sig = 1 / (1 + Math.exp(-preAct[i]));
+    g[i] = gradOut[i] * (sig + preAct[i] * sig * (1 - sig));
+  }
+  return g;
+}
+
+class Adam {
+  constructor(paramGroups, lr = CFG.LR) {
+    this.groups = paramGroups;
+    this.lr = lr;
+    this.b1 = 0.9; this.b2 = 0.999; this.eps = 1e-8;
+    this.t  = 0;
+    this.m  = paramGroups.map(p => new Float32Array(p.w.length));
+    this.v  = paramGroups.map(p => new Float32Array(p.w.length));
+  }
+
+  step() {
+    this.t++;
+    const bc1 = 1 - this.b1 ** this.t;
+    const bc2 = 1 - this.b2 ** this.t;
+    for (let pi = 0; pi < this.groups.length; pi++) {
+      const { w, g } = this.groups[pi];
+      const m = this.m[pi], v = this.v[pi];
+      for (let i = 0; i < w.length; i++) {
+        m[i] = this.b1 * m[i] + (1 - this.b1) * g[i];
+        v[i] = this.b2 * v[i] + (1 - this.b2) * g[i] * g[i];
+        w[i] -= this.lr * (m[i] / bc1) / (Math.sqrt(v[i] / bc2) + this.eps);
+      }
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SCORENET
+// ════════════════════════════════════════════════════════════════════
+class ScoreNet {
+  constructor() {
+    const C = CFG.CHUNK, H = CFG.HID;
+    const F = CFG.FMT_DIM, S = CFG.SEM_DIM, T = CFG.T_DIM;
+    const inDim  = C + T + F + S;    // 368
+    const cDim   = F + S;            // 48
+
+    this.inDim = inDim; this.cDim = cDim;
+
+    // Learnable embeddings
+    this.fmtEmb  = new Float32Array(CFG.N_FORMATS * F);
+    this.semEmb  = new Float32Array(CFG.VOCAB * S);
+    this.gFmt    = new Float32Array(CFG.N_FORMATS * F);
+    this.gSem    = new Float32Array(CFG.VOCAB * S);
+
+    const es = 0.02;
+    for (let i = 0; i < this.fmtEmb.length; i++) this.fmtEmb[i] = (Math.random()*2-1)*es;
+    for (let i = 0; i < this.semEmb.length;  i++) this.semEmb[i] = (Math.random()*2-1)*es;
+
+    // AdaLN projections (cDim → H)
+    this.adaShift = new Linear(cDim, H);
+    this.adaScale = new Linear(cDim, H);
+
+    // Layers
+    this.ln1 = new LayerNorm(inDim);
+    this.l1  = new Linear(inDim, H);
+    this.ln2 = new LayerNorm(H);
+    this.l2  = new Linear(H, H);
+    this.ln3 = new LayerNorm(H);
+    this.l3  = new Linear(H, C);
+
+    this._cache = {};
+
+    // Build Adam over all params
+    this._buildOptimizer();
+
+    console.log('[ScoreNet] params:', this.paramCount());
+  }
+
+  _buildOptimizer() {
+    const groups = [
+      ...this.adaShift.params(), ...this.adaScale.params(),
+      ...this.l1.params(), ...this.l2.params(), ...this.l3.params(),
+      ...this.ln1.params(), ...this.ln2.params(), ...this.ln3.params(),
+      { w: this.fmtEmb, g: this.gFmt },
+      { w: this.semEmb, g: this.gSem },
+    ];
+    this.opt = new Adam(groups);
+  }
+
+  paramCount() {
+    let n = 0;
+    for (const p of [
+      this.adaShift, this.adaScale, this.l1, this.l2, this.l3
+    ]) n += p.weight.length + p.bias.length;
+    for (const l of [this.ln1, this.ln2, this.ln3])
+      n += l.weight.length + l.bias.length;
+    n += this.fmtEmb.length + this.semEmb.length;
+    return n;
+  }
+
+  _tEmb(t) {
+    const dim = CFG.T_DIM, emb = new Float32Array(dim);
+    for (let i = 0; i < dim / 2; i++) {
+      const freq = Math.exp(-Math.log(10000) * 2 * i / dim);
+      emb[i]          = Math.sin(t * freq);
+      emb[i + dim/2]  = Math.cos(t * freq);
+    }
+    return emb;
+  }
+
+  _fmtVec(fid) {
+    const F = CFG.FMT_DIM;
+    return this.fmtEmb.slice(fid * F, (fid+1) * F);
+  }
+
+  _semVec(tagIds) {
+    const S = CFG.SEM_DIM, out = new Float32Array(S);
+    if (!tagIds.length) return out;
+    for (const id of tagIds) {
+      const off = clamp(id, 0, CFG.VOCAB-1) * S;
+      for (let i = 0; i < S; i++) out[i] += this.semEmb[off + i];
+    }
+    for (let i = 0; i < S; i++) out[i] /= tagIds.length;
+    return out;
+  }
+
+  forward(xt, t, fid, tagIds) {
+    const C = CFG.CHUNK, F = CFG.FMT_DIM, S = CFG.SEM_DIM, T = CFG.T_DIM;
+
+    const tE  = this._tEmb(t);
+    const fE  = this._fmtVec(fid);
+    const sE  = this._semVec(tagIds);
+
+    // Conditioning vector
+    const cond = new Float32Array(this.cDim);
+    cond.set(fE, 0); cond.set(sE, F);
+
+    // Input assembly
+    const inp = new Float32Array(this.inDim);
+    inp.set(xt, 0); inp.set(tE, C); inp.set(fE, C+T); inp.set(sE, C+T+F);
+
+    // Layer 1
+    const x1ln  = this.ln1.forward(inp);
+    const x1    = this.l1.forward(x1ln);
+
+    // AdaLN
+    const shift = this.adaShift.forward(cond);
+    const scale = this.adaScale.forward(cond);
+    const x1c   = new Float32Array(CFG.HID);
+    for (let i = 0; i < CFG.HID; i++) x1c[i] = x1[i] * (1 + scale[i]) + shift[i];
+    const x1a = silu(x1c);
+
+    // Layer 2
+    const x2ln = this.ln2.forward(x1a);
+    const x2   = this.l2.forward(x2ln);
+    const x2a  = silu(x2);
+
+    // Layer 3 (output)
+    const x3ln = this.ln3.forward(x2a);
+    const out  = this.l3.forward(x3ln);
+
+    this._cache = { inp, x1ln, x1, cond, shift, scale, x1c, x1a, x2ln, x2, x2a, x3ln, t, fid, tagIds, xt, fE, sE };
+    return out;
+  }
+
+  backward(gradOut) {
+    const c = this._cache;
+    const F = CFG.FMT_DIM, S = CFG.SEM_DIM;
+    const H = CFG.HID;
+
+    // L3 ← LN3
+    const gX3ln = this.l3.backward(gradOut);
+    const gX2a  = this.ln3.backward(gX3ln);
+
+    // SiLU backward (layer 2)
+    const gX2   = siluGrad(c.x2, gX2a);
+    const gX2ln = this.l2.backward(gX2);
+    const gX1a  = this.ln2.backward(gX2ln);
+
+    // SiLU backward (AdaLN output)
+    const gX1c  = siluGrad(c.x1c, gX1a);
+
+    // AdaLN backward
+    const gX1   = new Float32Array(H);
+    const gShift = new Float32Array(H);
+    const gScale = new Float32Array(H);
+    for (let i = 0; i < H; i++) {
+      gX1[i]    = gX1c[i] * (1 + c.scale[i]);
+      gShift[i] = gX1c[i];
+      gScale[i] = gX1c[i] * c.x1[i];
+    }
+    const gCond1 = this.adaShift.backward(gShift);
+    const gCond2 = this.adaScale.backward(gScale);
+
+    // L1 ← LN1
+    const gX1ln = this.l1.backward(gX1);
+    this.ln1.backward(gX1ln);
+
+    // Embedding gradients (from cond vector)
+    // cond = [fE, sE], so grad splits at F
+    for (let i = 0; i < this.cDim; i++) {
+      const g = gCond1[i] + gCond2[i];
+      if (i < F) {
+        // fmt embedding grad
+        this.gFmt[c.fid * F + i] += g;
+      } else {
+        // sem embedding grad (mean-pooled, so divide by n tags)
+        const nTags = c.tagIds.length || 1;
+        for (const id of c.tagIds) {
+          this.gSem[clamp(id, 0, CFG.VOCAB-1) * S + (i - F)] += g / nTags;
+        }
+      }
+    }
+  }
+
+  zeroGrad() {
+    for (const l of [this.adaShift, this.adaScale, this.l1, this.l2, this.l3])
+      l.zeroGrad();
+    for (const l of [this.ln1, this.ln2, this.ln3])
+      l.zeroGrad();
+    this.gFmt.fill(0);
+    this.gSem.fill(0);
+  }
+
+  step() { this.opt.step(); }
+
+  serialize() {
+    const enc = (arr) => {
+      let s = '';
+      const bytes = new Uint8Array(arr.buffer);
+      for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return btoa(s);
+    };
+    return {
+      version: '0.1',
+      steps:   TRAIN.steps,
+      config:  { T: CFG.T, CHUNK: CFG.CHUNK, HID: CFG.HID, VOCAB: CFG.VOCAB },
+      weights: {
+        fmtEmb:    enc(this.fmtEmb),
+        semEmb:    enc(this.semEmb),
+        adaShiftW: enc(this.adaShift.weight), adaShiftB: enc(this.adaShift.bias),
+        adaScaleW: enc(this.adaScale.weight), adaScaleB: enc(this.adaScale.bias),
+        l1W: enc(this.l1.weight), l1B: enc(this.l1.bias),
+        l2W: enc(this.l2.weight), l2B: enc(this.l2.bias),
+        l3W: enc(this.l3.weight), l3B: enc(this.l3.bias),
+        ln1W: enc(this.ln1.weight), ln1B: enc(this.ln1.bias),
+        ln2W: enc(this.ln2.weight), ln2B: enc(this.ln2.bias),
+        ln3W: enc(this.ln3.weight), ln3B: enc(this.ln3.bias),
+      }
+    };
+  }
+
+  load(data) {
+    const dec = (s, arr) => {
+      const bin = atob(s);
+      const bytes = new Uint8Array(arr.buffer);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = bin.charCodeAt(i);
+    };
+    const w = data.weights;
+    dec(w.fmtEmb, this.fmtEmb);
+    dec(w.semEmb, this.semEmb);
+    dec(w.adaShiftW, this.adaShift.weight); dec(w.adaShiftB, this.adaShift.bias);
+    dec(w.adaScaleW, this.adaScale.weight); dec(w.adaScaleB, this.adaScale.bias);
+    dec(w.l1W, this.l1.weight); dec(w.l1B, this.l1.bias);
+    dec(w.l2W, this.l2.weight); dec(w.l2B, this.l2.bias);
+    dec(w.l3W, this.l3.weight); dec(w.l3B, this.l3.bias);
+    dec(w.ln1W, this.ln1.weight); dec(w.ln1B, this.ln1.bias);
+    dec(w.ln2W, this.ln2.weight); dec(w.ln2B, this.ln2.bias);
+    dec(w.ln3W, this.ln3.weight); dec(w.ln3B, this.ln3.bias);
+    this._buildOptimizer();
+    if (data.steps) TRAIN.steps = data.steps;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DIFFUSION MATH
+// ════════════════════════════════════════════════════════════════════
+const DIFF = (() => {
+  const betas    = new Float32Array(CFG.T + 1);
+  const alphas   = new Float32Array(CFG.T + 1);
+  const alphaBar = new Float32Array(CFG.T + 1);
+
+  alphaBar[0] = 1;
+  for (let t = 1; t <= CFG.T; t++) {
+    betas[t]    = CFG.BETA_START + (CFG.BETA_END - CFG.BETA_START) * (t-1) / (CFG.T-1);
+    alphas[t]   = 1 - betas[t];
+    alphaBar[t] = alphaBar[t-1] * alphas[t];
+  }
+
+  return {
+    betas, alphas, alphaBar,
+
+    forward(x0, t) {
+      const ab   = alphaBar[t];
+      const sab  = Math.sqrt(ab);
+      const s1ab = Math.sqrt(1 - ab);
+      const noise = new Float32Array(x0.length);
+      const xt    = new Float32Array(x0.length);
+      for (let i = 0; i < x0.length; i++) {
+        noise[i] = randn();
+        xt[i]    = sab * x0[i] + s1ab * noise[i];
+      }
+      return { xt, noise };
+    },
+
+    // DDPM reverse step
+    reverseStep(xt, epsPred, t) {
+      const beta  = betas[t];
+      const ab    = alphaBar[t];
+      const abPrev = alphaBar[t-1] || 1;
+      const alpha = alphas[t];
+
+      const xPrev = new Float32Array(xt.length);
+      const sigma = t > 1 ? Math.sqrt(beta * (1 - abPrev) / (1 - ab)) : 0;
+
+      for (let i = 0; i < xt.length; i++) {
+        // Predicted x0
+        const x0hat = clamp((xt[i] - Math.sqrt(1-ab) * epsPred[i]) / Math.sqrt(ab), -1, 1);
+        // Posterior mean (DDPM eq. 7)
+        const mean  = (Math.sqrt(abPrev) * beta / (1-ab)) * x0hat +
+                      (Math.sqrt(alpha) * (1-abPrev) / (1-ab)) * xt[i];
+        xPrev[i]    = mean + (t > 1 ? sigma * randn() : 0);
+      }
+      return xPrev;
+    }
+  };
+})();
+
+// ════════════════════════════════════════════════════════════════════
+// FORMAT HANDLERS
+// ════════════════════════════════════════════════════════════════════
+function detectFormat(file) {
+  const n = file.name.toLowerCase();
+  if (n.endsWith('.html') || n.endsWith('.htm')) return FORMAT.HTML;
+  if (n.endsWith('.bmp'))  return FORMAT.BMP;
+  if (n.endsWith('.wav'))  return FORMAT.WAV;
+  return FORMAT.TXT;
+}
+
+async function parseFile(file, fid) {
+  const buf   = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+
+  // Integrity check
+  if (fid === FORMAT.BMP && (bytes[0] !== 0x42 || bytes[1] !== 0x4D))
+    return { ok: false, reason: 'Invalid BMP header' };
+  if (fid === FORMAT.WAV && (bytes[0] !== 0x52 || bytes[1] !== 0x49))
+    return { ok: false, reason: 'Invalid WAV/RIFF header' };
+
+  let floats, meta = {};
+
+  if (fid === FORMAT.BMP) {
+    const view = new DataView(buf);
+    const w    = view.getInt32(18, true);
+    const h    = view.getInt32(22, true);
+    const off  = view.getUint32(10, true);
+    const pix  = bytes.slice(off);
+    floats = new Float32Array(pix.length);
+    for (let i = 0; i < pix.length; i++) floats[i] = pix[i] / 127.5 - 1;
+    meta = { w, h, pixOff: off };
+
+  } else if (fid === FORMAT.WAV) {
+    const view = new DataView(buf);
+    const sr   = view.getUint32(24, true);
+    const ch   = view.getUint16(22, true);
+    // Find data chunk
+    let doff = 12;
+    while (doff < bytes.length - 8) {
+      const id = String.fromCharCode(bytes[doff],bytes[doff+1],bytes[doff+2],bytes[doff+3]);
+      const sz = view.getUint32(doff+4, true);
+      if (id === 'data') { doff += 8; break; }
+      doff += 8 + sz;
+    }
+    const nSamp = Math.floor((bytes.length - doff) / 2);
+    floats = new Float32Array(nSamp);
+    for (let i = 0; i < nSamp; i++)
+      floats[i] = view.getInt16(doff + i*2, true) / 32768;
+    meta = { sr, ch, dataOff: doff };
+
+  } else {
+    floats = new Float32Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) floats[i] = bytes[i] / 127.5 - 1;
+  }
+
+  if (floats.length < CFG.CHUNK) return { ok: false, reason: 'File too small (< 256 elements)' };
+
+  // Chunk into windows
+  const chunks = [];
+  const n = Math.floor(floats.length / CFG.CHUNK);
+  for (let c = 0; c < n; c++) {
+    chunks.push(floats.slice(c * CFG.CHUNK, (c+1) * CFG.CHUNK));
+  }
+
+  return { ok: true, chunks, meta, fid };
+}
+
+function buildBMPHeader(w, h) {
+  const rowSize = Math.ceil(w * 3 / 4) * 4;
+  const dataSize = rowSize * Math.abs(h);
+  const fileSize = 54 + dataSize;
+  const hdr = new Uint8Array(54);
+  const v   = new DataView(hdr.buffer);
+  hdr[0] = 0x42; hdr[1] = 0x4D;
+  v.setUint32(2,  fileSize, true);
+  v.setUint32(10, 54,       true);
+  v.setUint32(14, 40,       true);
+  v.setInt32 (18, w,        true);
+  v.setInt32 (22, h,        true);
+  v.setUint16(26, 1,        true);
+  v.setUint16(28, 24,       true);
+  v.setUint32(34, dataSize, true);
+  v.setInt32 (38, 2835,     true);
+  v.setInt32 (42, 2835,     true);
+  return hdr;
+}
+
+function buildWAVHeader(nSamp, sr, ch) {
+  const dataSize = nSamp * 2;
+  const hdr = new Uint8Array(44);
+  const v   = new DataView(hdr.buffer);
+  hdr.set([0x52,0x49,0x46,0x46], 0);
+  v.setUint32(4,  36 + dataSize,    true);
+  hdr.set([0x57,0x41,0x56,0x45], 8);
+  hdr.set([0x66,0x6D,0x74,0x20], 12);
+  v.setUint32(16, 16,               true);
+  v.setUint16(20, 1,                true);
+  v.setUint16(22, ch,               true);
+  v.setUint32(24, sr,               true);
+  v.setUint32(28, sr * ch * 2,      true);
+  v.setUint16(32, ch * 2,           true);
+  v.setUint16(34, 16,               true);
+  hdr.set([0x64,0x61,0x74,0x61], 36);
+  v.setUint32(40, dataSize,         true);
+  return hdr;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// VALIDATION (from Once Bytten)
+// ════════════════════════════════════════════════════════════════════
+function shannonEntropy(bytes) {
+  const freq = new Uint32Array(256);
+  for (let i = 0; i < bytes.length; i++) freq[bytes[i]]++;
+  let e = 0, n = bytes.length;
+  for (let i = 0; i < 256; i++) {
+    if (!freq[i]) continue;
+    const p = freq[i] / n;
+    e -= p * Math.log2(p);
+  }
+  return e;
+}
+
+function rosaRatio(bytes) {
+  // Suffix automaton compression ratio approximation
+  // (simplified: unique bigram count / length as proxy)
+  const regionSize = Math.min(4096, Math.floor(bytes.length / 3));
+  let totalRatio = 0, count = 0;
+  for (let r = 0; r < 3; r++) {
+    const start = Math.floor(r * bytes.length / 3);
+    const slice = bytes.slice(start, start + regionSize);
+    if (slice.length < 16) continue;
+    // Count unique bigrams
+    const seen = new Set();
+    for (let i = 0; i < slice.length - 1; i++)
+      seen.add(slice[i] * 256 + slice[i+1]);
+    totalRatio += seen.size / slice.length;
+    count++;
+  }
+  return count > 0 ? totalRatio / count : 1;
+}
+
+// Expected ranges per format
+const FORMAT_RANGES = {
+  [FORMAT.TXT]:  { entropyLo: 3.5, entropyHi: 7.0, rosaLo: 0.15, rosaHi: 0.9 },
+  [FORMAT.HTML]: { entropyLo: 3.0, entropyHi: 7.0, rosaLo: 0.10, rosaHi: 0.85 },
+  [FORMAT.BMP]:  { entropyLo: 2.0, entropyHi: 7.8, rosaLo: 0.05, rosaHi: 0.95 },
+  [FORMAT.WAV]:  { entropyLo: 3.5, entropyHi: 7.8, rosaLo: 0.08, rosaHi: 0.98 },
+};
+
+const FORMAT_MAGIC = {
+  [FORMAT.BMP]:  [0x42, 0x4D],
+  [FORMAT.WAV]:  [0x52, 0x49, 0x46, 0x46],
+  [FORMAT.TXT]:  null,
+  [FORMAT.HTML]: null,
+};
+
+function validateOutput(bytes, fid, meta) {
+  const checks = [];
+  let verdict = 'pass';
+
+  // 1. Magic bytes
+  const magic = FORMAT_MAGIC[fid];
+  if (magic) {
+    let ok = true;
+    for (let i = 0; i < magic.length; i++) if (bytes[i] !== magic[i]) { ok = false; break; }
+    checks.push({
+      icon: ok ? '✓' : '✗',
+      ok,
+      label: 'Magic Bytes',
+      value: ok
+        ? `${magic.map(b => '0x'+b.toString(16).padStart(2,'0').toUpperCase()).join(' ')} ✓`
+        : `Expected ${magic.map(b => '0x'+b.toString(16).toUpperCase()).join(' ')}, got ${
+            Array.from(bytes.slice(0,magic.length)).map(b=>'0x'+b.toString(16).toUpperCase()).join(' ')
+          }`
+    });
+    if (!ok) verdict = 'fail';
+  } else {
+    // HTML: check for <html
+    if (fid === FORMAT.HTML) {
+      const text = new TextDecoder().decode(bytes.slice(0, 512)).toLowerCase();
+      const ok = text.includes('<html') || text.includes('<!doctype');
+      checks.push({ icon: ok ? '✓' : '⚠', ok, label: 'HTML Marker', value: ok ? 'Found <html / !DOCTYPE' : 'Missing <html / !DOCTYPE' });
+      if (!ok && verdict !== 'fail') verdict = 'warn';
+    } else {
+      checks.push({ icon: '—', ok: true, label: 'Magic Bytes', value: 'Not required for TXT' });
+    }
+  }
+
+  // 2. Shannon entropy
+  const entropy = shannonEntropy(bytes);
+  const er = FORMAT_RANGES[fid];
+  const eOk = entropy >= er.entropyLo && entropy <= er.entropyHi;
+  checks.push({
+    icon: eOk ? '✓' : '⚠',
+    ok: eOk,
+    label: 'Entropy',
+    value: `${entropy.toFixed(3)} bits/byte (expected ${er.entropyLo}–${er.entropyHi})`
+  });
+  if (!eOk && verdict !== 'fail') verdict = 'warn';
+
+  // 3. ROSA structural ratio
+  const rosa = rosaRatio(bytes);
+  const rOk = rosa >= er.rosaLo && rosa <= er.rosaHi;
+  checks.push({
+    icon: rOk ? '✓' : '⚠',
+    ok: rOk,
+    label: 'ROSA Structure',
+    value: `ratio ${rosa.toFixed(3)} (expected ${er.rosaLo}–${er.rosaHi})`
+  });
+  if (!rOk && verdict !== 'fail') verdict = 'warn';
+
+  // 4. Format-specific
+  if (fid === FORMAT.BMP && meta && meta.w && meta.h) {
+    const rowSize = Math.ceil(meta.w * 3 / 4) * 4;
+    const expected = 54 + rowSize * meta.h;
+    const ok = Math.abs(bytes.length - expected) <= rowSize;
+    checks.push({
+      icon: ok ? '✓' : '⚠', ok,
+      label: 'BMP Dimensions',
+      value: ok
+        ? `${meta.w}×${meta.h}px, ${bytes.length} bytes ✓`
+        : `Expected ~${expected} bytes for ${meta.w}×${meta.h}, got ${bytes.length}`
+    });
+    if (!ok && verdict !== 'fail') verdict = 'warn';
+  }
+
+  if (fid === FORMAT.WAV && meta && meta.nSamp) {
+    const expectedData = meta.nSamp * 2;
+    const ok = bytes.length >= 44 + expectedData;
+    checks.push({
+      icon: ok ? '✓' : '⚠', ok,
+      label: 'WAV Data Size',
+      value: ok
+        ? `${meta.nSamp} samples (${(meta.nSamp / (meta.sr||22050)).toFixed(2)}s) ✓`
+        : `Size mismatch: expected ≥${44+expectedData}, got ${bytes.length}`
+    });
+    if (!ok && verdict !== 'fail') verdict = 'warn';
+  }
+
+  return { checks, verdict };
+}
+
+// ════════════════════════════════════════════════════════════════════
+// APP STATE
+// ════════════════════════════════════════════════════════════════════
+const CORPUS = [];   // { fid, chunks: Float32Array[], meta, name }
+let   MODEL  = null;
+
+const TRAIN = {
+  running: false,
+  steps:   0,
+  bestLoss: Infinity,
+  lossHistory: [],
+  _raf: null,
+  _should_pause: false,
+};
+
+const OUTPUT = {
+  bytes: null,
+  fid:   null,
+  meta:  null,
+};
+
+// ════════════════════════════════════════════════════════════════════
+// TRAINING LOOP
+// ════════════════════════════════════════════════════════════════════
+async function trainingLoop() {
+  if (!MODEL) MODEL = new ScoreNet();
+
+  setStatus('running', 'Training…');
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-pause').disabled = false;
+
+  const allChunks = [];
+  for (const entry of CORPUS) {
+    for (const c of entry.chunks) allChunks.push({ chunk: c, fid: entry.fid });
+  }
+  if (!allChunks.length) { setStatus('', 'No chunks.'); return; }
+
+  TRAIN.running      = true;
+  TRAIN._should_pause = false;
+
+  while (TRAIN.running && !TRAIN._should_pause) {
+    // Sample random chunk
+    const { chunk, fid } = allChunks[Math.floor(Math.random() * allChunks.length)];
+    const t = 1 + Math.floor(Math.random() * CFG.T);
+
+    // Forward diffusion
+    const { xt, noise } = DIFF.forward(chunk, t);
+
+    // Tags: empty during training (unconditional for now)
+    const tagIds = [];
+
+    // ScoreNet forward
+    const epsPred = MODEL.forward(xt, t, fid, tagIds);
+
+    // MSE loss + backward
+    let loss = 0;
+    const gradOut = new Float32Array(CFG.CHUNK);
+    for (let i = 0; i < CFG.CHUNK; i++) {
+      const d     = epsPred[i] - noise[i];
+      loss       += d * d;
+      gradOut[i]  = 2 * d / CFG.CHUNK;
+    }
+    loss /= CFG.CHUNK;
+
+    MODEL.backward(gradOut);
+    MODEL.step();
+    MODEL.zeroGrad();
+
+    TRAIN.steps++;
+    TRAIN.lossHistory.push(loss);
+    if (loss < TRAIN.bestLoss) TRAIN.bestLoss = loss;
+    if (TRAIN.lossHistory.length > 400) TRAIN.lossHistory.shift();
+
+    // Yield and update UI
+    if (TRAIN.steps % CFG.YIELD_EVERY === 0) {
+      updateTrainUI(loss);
+      await yieldToMain();
+    }
+  }
+
+  TRAIN.running = false;
+  if (TRAIN._should_pause) {
+    setStatus('paused', `Paused at step ${TRAIN.steps}`);
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-start').textContent = 'Resume';
+    document.getElementById('btn-pause').disabled = true;
+  } else {
+    setStatus('', `Stopped at step ${TRAIN.steps}`);
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-pause').disabled = true;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// GENERATION
+// ════════════════════════════════════════════════════════════════════
+async function runGeneration() {
+  if (!MODEL) { alert('Train the model first.'); return; }
+
+  const fid    = parseInt(document.getElementById('gen-format').value);
+  const tagStr = document.getElementById('gen-tags').value;
+  const tagIds = tagToIds(tagStr);
+  const steps  = parseInt(document.getElementById('gen-steps').value);
+
+  let nChunks, meta = {};
+
+  if (fid === FORMAT.BMP) {
+    const w = parseInt(document.getElementById('gen-bmp-w').value);
+    const h = parseInt(document.getElementById('gen-bmp-h').value);
+    const rowSize = Math.ceil(w * 3 / 4) * 4;
+    const nBytes  = rowSize * h;
+    nChunks = Math.max(1, Math.ceil(nBytes / CFG.CHUNK));
+    meta = { w, h };
+  } else if (fid === FORMAT.WAV) {
+    const dur = parseFloat(document.getElementById('gen-wav-dur').value);
+    const sr  = parseInt(document.getElementById('gen-wav-sr').value);
+    const ch  = 1;
+    const nSamp = Math.ceil(dur * sr);
+    nChunks = Math.max(1, Math.ceil(nSamp / CFG.CHUNK));
+    meta = { sr, ch, nSamp };
+  } else {
+    const chars = parseInt(document.getElementById('gen-chars').value);
+    nChunks = Math.max(1, Math.ceil(chars / CFG.CHUNK));
+  }
+
+  document.getElementById('btn-generate').disabled = true;
+  document.getElementById('gen-progress').style.width = '0%';
+
+  const floatOut = [];
+  const T_gen = Math.min(steps, CFG.T);
+
+  for (let c = 0; c < nChunks; c++) {
+    // Start from noise
+    let xt = new Float32Array(CFG.CHUNK);
+    for (let i = 0; i < CFG.CHUNK; i++) xt[i] = randn();
+
+    // Reverse diffusion
+    for (let t = T_gen; t >= 1; t--) {
+      const epsPred = MODEL.forward(xt, t, fid, tagIds);
+      xt = DIFF.reverseStep(xt, epsPred, t);
+    }
+    floatOut.push(xt);
+
+    // Progress
+    const pct = ((c+1) / nChunks * 100).toFixed(0);
+    document.getElementById('gen-progress').style.width = pct + '%';
+    if (c % 2 === 0) await yieldToMain();
+  }
+
+  // Denormalize + assemble
+  const C = CFG.CHUNK;
+  let rawBytes;
+
+  if (fid === FORMAT.WAV) {
+    const { sr, ch, nSamp } = meta;
+    const hdr  = buildWAVHeader(nSamp, sr, ch);
+    const pcm  = new Int16Array(nChunks * C);
+    let idx = 0;
+    for (const chunk of floatOut) {
+      for (let i = 0; i < C && idx < nSamp; i++, idx++)
+        pcm[idx] = Math.round(clamp(chunk[i], -1, 1) * 32767);
+    }
+    rawBytes = new Uint8Array(hdr.length + pcm.buffer.byteLength);
+    rawBytes.set(hdr, 0);
+    rawBytes.set(new Uint8Array(pcm.buffer), hdr.length);
+    meta.nSamp = nSamp;
+
+  } else if (fid === FORMAT.BMP) {
+    const { w, h } = meta;
+    const rowSize = Math.ceil(w * 3 / 4) * 4;
+    const hdr  = buildBMPHeader(w, h);
+    const pix  = new Uint8Array(rowSize * h);
+    let idx = 0;
+    for (const chunk of floatOut) {
+      for (let i = 0; i < C && idx < pix.length; i++, idx++)
+        pix[idx] = clamp(Math.round((chunk[i] + 1) * 127.5), 0, 255);
+    }
+    rawBytes = new Uint8Array(hdr.length + pix.length);
+    rawBytes.set(hdr, 0); rawBytes.set(pix, hdr.length);
+
+  } else {
+    // TXT / HTML
+    const maxLen = nChunks * C;
+    rawBytes = new Uint8Array(maxLen);
+    let idx = 0;
+    for (const chunk of floatOut) {
+      for (let i = 0; i < C; i++, idx++)
+        rawBytes[idx] = clamp(Math.round((chunk[i] + 1) * 127.5), 0, 255);
+    }
+  }
+
+  OUTPUT.bytes = rawBytes;
+  OUTPUT.fid   = fid;
+  OUTPUT.meta  = meta;
+
+  renderOutput(rawBytes, fid, meta);
+
+  // Validate
+  const { checks, verdict } = validateOutput(rawBytes, fid, meta);
+  renderValidation(checks, verdict);
+
+  document.getElementById('btn-generate').disabled = false;
+  document.getElementById('btn-download').disabled = false;
+  document.getElementById('gen-progress').style.width = '100%';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// OUTPUT RENDERING
+// ════════════════════════════════════════════════════════════════════
+function renderOutput(bytes, fid, meta) {
+  const preview = document.getElementById('output-preview');
+  const bmpCvs  = document.getElementById('bmp-preview-canvas');
+  bmpCvs.style.display = 'none';
+  preview.style.display = 'block';
+
+  if (fid === FORMAT.TXT || fid === FORMAT.HTML) {
+    try {
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      preview.textContent = text.slice(0, 2000) + (text.length > 2000 ? '\n…' : '');
+    } catch { preview.textContent = '[decode error]'; }
+
+  } else if (fid === FORMAT.BMP) {
+    const { w, h } = meta;
+    bmpCvs.width = w; bmpCvs.height = h;
+    bmpCvs.style.display = 'block';
+    preview.style.display = 'none';
+    const ctx  = bmpCvs.getContext('2d');
+    const img  = ctx.createImageData(w, h);
+    const rowSize = Math.ceil(w * 3 / 4) * 4;
+    for (let row = 0; row < h; row++) {
+      // BMP is bottom-up
+      const srcRow = bytes.slice(54 + (h-1-row)*rowSize, 54 + (h-row)*rowSize);
+      for (let col = 0; col < w; col++) {
+        const dstIdx = (row * w + col) * 4;
+        // BMP stores BGR
+        img.data[dstIdx]   = srcRow[col*3 + 2]; // R
+        img.data[dstIdx+1] = srcRow[col*3 + 1]; // G
+        img.data[dstIdx+2] = srcRow[col*3];     // B
+        img.data[dstIdx+3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+  } else if (fid === FORMAT.WAV) {
+    preview.textContent = `WAV generated: ${(meta.nSamp / meta.sr).toFixed(2)}s @ ${meta.sr}Hz mono\n${bytes.length} bytes total`;
+  }
+}
+
+function renderValidation(checks, verdict) {
+  const el = document.getElementById('validate-checks');
+  el.innerHTML = checks.map(c => `
+    <div class="check-row">
+      <div class="check-icon">${c.icon}</div>
+      <div>
+        <div class="check-label">${esc(c.label)}</div>
+        <div class="check-value">${esc(c.value)}</div>
+      </div>
+    </div>
+  `).join('');
+
+  const vEl = document.getElementById('validate-verdict');
+  vEl.className = `verdict verdict-${verdict}`;
+  vEl.textContent = verdict === 'pass' ? '✓ PASS' : verdict === 'warn' ? '⚠ WARN' : '✗ FAIL';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// LOSS CANVAS
+// ════════════════════════════════════════════════════════════════════
+function drawLoss() {
+  const cvs = document.getElementById('loss-canvas');
+  const ctx = cvs.getContext('2d');
+  const W = cvs.width, H = cvs.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const hist = TRAIN.lossHistory;
+  if (hist.length < 2) return;
+
+  const maxL = Math.max(...hist) * 1.05;
+  const minL = Math.min(...hist) * 0.95;
+
+  ctx.strokeStyle = '#2a2545';
+  ctx.lineWidth = 0.5;
+  const nGrid = 4;
+  for (let i = 1; i < nGrid; i++) {
+    const y = H * i / nGrid;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // Loss line
+  ctx.strokeStyle = '#7c5cfc';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < hist.length; i++) {
+    const x = (i / (hist.length - 1)) * W;
+    const y = H - ((hist[i] - minL) / (maxL - minL + 1e-9)) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Recent avg highlight
+  const recent = hist.slice(-20);
+  const avg = recent.reduce((a,b) => a+b, 0) / recent.length;
+  ctx.fillStyle = 'rgba(124,92,252,0.08)';
+  const yAvg = H - ((avg - minL) / (maxL - minL + 1e-9)) * H;
+  ctx.fillRect(0, yAvg, W, H - yAvg);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// UI HELPERS
+// ════════════════════════════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    const names = ['train','generate','validate','model'];
+    t.classList.toggle('active', names[i] === name);
+  });
+  document.querySelectorAll('.pane').forEach((p,i) => {
+    const names = ['pane-train','pane-generate','pane-validate','pane-model'];
+    p.classList.toggle('active', p.id === 'pane-' + name);
+  });
+}
+
+function setStatus(cls, msg) {
+  const el = document.getElementById('train-status');
+  el.className = 'train-status' + (cls ? ' ' + cls : '');
+  el.id = 'train-status';
+  el.textContent = msg;
+}
+
+function updateTrainUI(loss) {
+  const lv = document.getElementById('loss-val');
+  const hS = document.getElementById('h-steps');
+  const hL = document.getElementById('h-loss');
+  const hC = document.getElementById('h-corpus');
+  const mS = document.getElementById('m-steps');
+  const mB = document.getElementById('m-bestloss');
+  const mCh = document.getElementById('m-chunks');
+  const mP = document.getElementById('m-params');
+
+  const lStr = loss.toFixed(4);
+  lv.textContent = lStr;
+  hS.textContent = TRAIN.steps;
+  hL.textContent = lStr;
+
+  let totalChunks = 0;
+  for (const e of CORPUS) totalChunks += e.chunks.length;
+  hC.textContent = totalChunks;
+
+  mS.textContent  = TRAIN.steps;
+  mB.textContent  = TRAIN.bestLoss < Infinity ? TRAIN.bestLoss.toFixed(4) : '—';
+  mCh.textContent = totalChunks;
+  if (MODEL) mP.textContent = MODEL.paramCount().toLocaleString();
+
+  drawLoss();
+}
+
+function updateSizeControls() {
+  const fid = parseInt(document.getElementById('gen-format').value);
+  document.getElementById('size-row-text').style.display = (fid === FORMAT.TXT || fid === FORMAT.HTML) ? '' : 'none';
+  document.getElementById('size-row-bmp').style.display  = (fid === FORMAT.BMP) ? '' : 'none';
+  document.getElementById('size-row-wav').style.display  = (fid === FORMAT.WAV) ? '' : 'none';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// TRAINING CONTROLS
+// ════════════════════════════════════════════════════════════════════
+function startTraining() {
+  if (!MODEL) MODEL = new ScoreNet();
+  if (TRAIN.running) return;
+  trainingLoop();
+}
+
+function pauseTraining() {
+  TRAIN._should_pause = true;
+}
+
+function resetModel() {
+  if (TRAIN.running) { TRAIN._should_pause = true; }
+  setTimeout(() => {
+    MODEL = new ScoreNet();
+    TRAIN.steps = 0;
+    TRAIN.bestLoss = Infinity;
+    TRAIN.lossHistory = [];
+    drawLoss();
+    setStatus('', 'Model reset. Ready.');
+    document.getElementById('btn-start').textContent = 'Start';
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-pause').disabled = true;
+    document.getElementById('loss-val').textContent = '—';
+    document.getElementById('h-steps').textContent = '0';
+    document.getElementById('h-loss').textContent = '—';
+    document.getElementById('m-steps').textContent = '0';
+    document.getElementById('m-bestloss').textContent = '—';
+  }, 100);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// FILE HANDLING
+// ════════════════════════════════════════════════════════════════════
+async function addFile(file) {
+  const fid = detectFormat(file);
+  const result = await parseFile(file, fid);
+
+  const badgeClass = ['badge-txt','badge-html','badge-bmp','badge-wav'][fid];
+
+  const entry = document.createElement('div');
+  entry.className = 'file-entry';
+
+  if (!result.ok) {
+    entry.innerHTML = `
+      <span class="fbadge badge-skip">${FMT_NAME[fid].toUpperCase()}</span>
+      <span class="fname">${esc(file.name)}</span>
+      <span class="fsize">${fmtSize(file.size)}</span>
+      <span class="fstatus bad">✗ ${esc(result.reason)}</span>
+    `;
+    document.getElementById('file-list').appendChild(entry);
+    return;
+  }
+
+  const corpusEntry = { fid, chunks: result.chunks, meta: result.meta, name: file.name };
+  CORPUS.push(corpusEntry);
+  const corpusIdx = CORPUS.length - 1;
+
+  entry.innerHTML = `
+    <span class="fbadge ${badgeClass}">${FMT_NAME[fid].toUpperCase()}</span>
+    <span class="fname">${esc(file.name)}</span>
+    <span class="fsize">${fmtSize(file.size)}</span>
+    <span class="fstatus ok">✓ ${result.chunks.length} chunks</span>
+    <span class="fclose" onclick="removeFile(${corpusIdx}, this.parentElement)">×</span>
+  `;
+  document.getElementById('file-list').appendChild(entry);
+
+  // Update corpus count
+  let tc = 0; for (const e of CORPUS) tc += e.chunks.length;
+  document.getElementById('h-corpus').textContent = tc;
+  document.getElementById('m-chunks').textContent = tc;
+}
+
+function removeFile(idx, el) {
+  CORPUS[idx] = null;
+  el.remove();
+  let tc = 0;
+  for (const e of CORPUS) if (e) tc += e.chunks.length;
+  document.getElementById('h-corpus').textContent = tc;
+  document.getElementById('m-chunks').textContent = tc;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DOWNLOAD
+// ════════════════════════════════════════════════════════════════════
+function downloadOutput() {
+  if (!OUTPUT.bytes) return;
+  const extMap = ['.txt','.html','.bmp','.wav'];
+  const blob = new Blob([OUTPUT.bytes], { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'fabula-output' + extMap[OUTPUT.fid];
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// WEIGHT EXPORT / IMPORT
+// ════════════════════════════════════════════════════════════════════
+function exportWeights() {
+  if (!MODEL) { alert('No model to export.'); return; }
+  const data = JSON.stringify(MODEL.serialize());
+  const blob = new Blob([data], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `autoencofabulator-${TRAIN.steps}steps.fabula`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function importWeights(file) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!MODEL) MODEL = new ScoreNet();
+    MODEL.load(data);
+    alert(`Weights loaded. Steps: ${data.steps}`);
+    updateTrainUI(0);
+  } catch (e) {
+    alert('Import failed: ' + e.message);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════════
+function init() {
+  // Drop zone
+  const dz = document.getElementById('drop-zone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag-over');
+    const files = Array.from(e.dataTransfer.files);
+    files.forEach(addFile);
+  });
+  dz.addEventListener('click', () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.multiple = true;
+    inp.accept = '.txt,.html,.htm,.bmp,.wav';
+    inp.onchange = () => Array.from(inp.files).forEach(addFile);
+    inp.click();
+  });
+
+  // Initial canvas
+  drawLoss();
+
+  // Init model eagerly so param count shows
+  MODEL = new ScoreNet();
+  document.getElementById('m-params').textContent = MODEL.paramCount().toLocaleString();
+}
+
+init();
+</script>
+</body>
+</html>
