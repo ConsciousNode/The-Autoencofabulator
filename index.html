@@ -1114,23 +1114,26 @@ const DIFF = (() => {
       return { xt, noise };
     },
 
-    // DDPM reverse step
+    // DDPM reverse step — Algorithm 2 (Ho et al. 2020)
     reverseStep(xt, epsPred, t) {
-      const beta  = betas[t];
-      const ab    = alphaBar[t];
+      const beta   = betas[t];
+      const alpha  = alphas[t];
+      const ab     = alphaBar[t];
       const abPrev = alphaBar[t-1] || 1;
-      const alpha = alphas[t];
 
-      const xPrev = new Float32Array(xt.length);
+      // Posterior variance (DDPM Eq. 7)
       const sigma = t > 1 ? Math.sqrt(beta * (1 - abPrev) / (1 - ab)) : 0;
 
+      // Precompute scalars outside the sample loop
+      const invSqrtAlpha      = 1 / Math.sqrt(alpha);
+      const sqrtOneMinusAb    = Math.sqrt(1 - ab);
+      const betaOverSqrt1mAb  = beta / sqrtOneMinusAb;
+
+      const xPrev = new Float32Array(xt.length);
       for (let i = 0; i < xt.length; i++) {
-        // Predicted x0
-        const x0hat = clamp((xt[i] - Math.sqrt(1-ab) * epsPred[i]) / Math.sqrt(ab), -1, 1);
-        // Posterior mean (DDPM eq. 7)
-        const mean  = (Math.sqrt(abPrev) * beta / (1-ab)) * x0hat +
-                      (Math.sqrt(alpha) * (1-abPrev) / (1-ab)) * xt[i];
-        xPrev[i]    = mean + (t > 1 ? sigma * randn() : 0);
+        // Algorithm 2: mean = (1/sqrt(α_t)) * (x_t - β_t/sqrt(1-ᾱ_t) * ε_pred)
+        const mean = invSqrtAlpha * (xt[i] - betaOverSqrt1mAb * epsPred[i]);
+        xPrev[i]   = mean + (t > 1 ? sigma * randn() : 0);
       }
       return xPrev;
     }
@@ -1603,9 +1606,12 @@ async function runGeneration() {
     rawBytes.set(hdr, 0); rawBytes.set(pix, hdr.length);
 
   } else {
-    // TXT / HTML
-    rawBytes = new Uint8Array(flatOut.length);
-    for (let i = 0; i < flatOut.length; i++)
+    // TXT / HTML — truncate to exact requested length
+    const exactLen = fid === FORMAT.HTML
+      ? parseInt(document.getElementById('gen-chars').value)
+      : parseInt(document.getElementById('gen-chars').value);
+    rawBytes = new Uint8Array(Math.min(exactLen, flatOut.length));
+    for (let i = 0; i < rawBytes.length; i++)
       rawBytes[i] = clamp(Math.round((flatOut[i] + 1) * 127.5), 0, 255);
   }
 
@@ -1681,7 +1687,11 @@ function renderValidation(checks, verdict) {
 
   const vEl = document.getElementById('validate-verdict');
   vEl.className = `verdict verdict-${verdict}`;
-  vEl.textContent = verdict === 'pass' ? '✓ PASS' : verdict === 'warn' ? '⚠ WARN' : '✗ FAIL';
+  vEl.textContent = verdict === 'pass'
+    ? '✓ PASS'
+    : verdict === 'warn'
+    ? '⚠ WARN — output may be low quality'
+    : '✗ FAIL — try generating again or train longer';
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1786,6 +1796,23 @@ function updateSizeControls() {
 function startTraining() {
   if (!MODEL) MODEL = new ScoreNet();
   if (TRAIN.running) return;
+
+  // Corpus size warning
+  const formatCounts = {};
+  for (const e of CORPUS) {
+    if (!e) continue;
+    formatCounts[e.fid] = (formatCounts[e.fid] || 0) + e.chunks.length;
+  }
+  const totalChunks = Object.values(formatCounts).reduce((a,b) => a+b, 0);
+  if (totalChunks === 0) {
+    setStatus('', 'No files loaded. Drop some files first.');
+    return;
+  }
+  if (totalChunks < 10) {
+    setStatus('paused', `⚠ Small corpus (${totalChunks} chunks). Model may overfit. Add more files for better results.`);
+    // Don't block — let them train but warn
+  }
+
   trainingLoop();
 }
 
