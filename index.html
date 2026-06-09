@@ -1480,40 +1480,76 @@ async function runGeneration() {
   document.getElementById('btn-generate').disabled = true;
   document.getElementById('gen-progress').style.width = '0%';
 
-  const floatOut = [];
   const T_gen = Math.min(steps, CFG.T);
+  const HOP   = CFG.CHUNK >> 1; // 128 — 50% overlap hop size
 
-  for (let c = 0; c < nChunks; c++) {
-    // Start from noise
+  // Triangular window: w[i] + w[i + CHUNK/2] = 1 for all i
+  // Perfect reconstruction property at 50% overlap
+  const triWin = new Float32Array(CFG.CHUNK);
+  for (let i = 0; i < CFG.CHUNK; i++)
+    triWin[i] = i < CFG.CHUNK/2 ? 2*i/CFG.CHUNK : 2*(CFG.CHUNK-i)/CFG.CHUNK;
+
+  // Generate one denoised chunk from pure noise
+  async function genChunk() {
     let xt = new Float32Array(CFG.CHUNK);
     for (let i = 0; i < CFG.CHUNK; i++) xt[i] = randn();
-
-    // Reverse diffusion
     for (let t = T_gen; t >= 1; t--) {
-      const epsPred = MODEL.forward(xt, t, fid, tagIds);
-      xt = DIFF.reverseStep(xt, epsPred, t);
+      const ep = MODEL.forward(xt, t, fid, tagIds);
+      xt = DIFF.reverseStep(xt, ep, t);
     }
-    floatOut.push(xt);
-
-    // Progress
-    const pct = ((c+1) / nChunks * 100).toFixed(0);
-    document.getElementById('gen-progress').style.width = pct + '%';
-    if (c % 2 === 0) await yieldToMain();
+    return xt;
   }
 
-  // Denormalize + assemble
-  const C = CFG.CHUNK;
+  // flatOut: normalized float values in [-1, 1], length = target payload size
+  let flatOut;
+
+  if (fid === FORMAT.TXT || fid === FORMAT.HTML) {
+    // Simple chaining — byte boundaries are invisible for text formats
+    flatOut = new Float32Array(nChunks * CFG.CHUNK);
+    for (let c = 0; c < nChunks; c++) {
+      const xt = await genChunk();
+      flatOut.set(xt, c * CFG.CHUNK);
+      document.getElementById('gen-progress').style.width = ((c+1)/nChunks*100).toFixed(0)+'%';
+      if (c % 2 === 0) await yieldToMain();
+    }
+
+  } else {
+    // OLA (overlap-add) for WAV and BMP
+    // Each chunk overlaps the previous by 50%; triangular windowing ensures
+    // smooth crossfade with perfect reconstruction at every seam.
+    const targetLen = fid === FORMAT.WAV
+      ? meta.nSamp
+      : Math.ceil(meta.w * 3 / 4) * 4 * meta.h;
+    const nOLA  = Math.max(1, Math.ceil((targetLen - CFG.CHUNK) / HOP) + 1);
+    const accum  = new Float32Array(targetLen + CFG.CHUNK); // +CHUNK for tail safety
+    const weight = new Float32Array(targetLen + CFG.CHUNK);
+
+    for (let c = 0; c < nOLA; c++) {
+      const xt     = await genChunk();
+      const offset = c * HOP;
+      for (let i = 0; i < CFG.CHUNK && offset+i < accum.length; i++) {
+        accum[offset+i]  += xt[i] * triWin[i];
+        weight[offset+i] += triWin[i];
+      }
+      document.getElementById('gen-progress').style.width = ((c+1)/nOLA*100).toFixed(0)+'%';
+      if (c % 2 === 0) await yieldToMain();
+    }
+
+    // Normalize by accumulated window weight to recover correct amplitude
+    flatOut = new Float32Array(targetLen);
+    for (let i = 0; i < targetLen; i++)
+      flatOut[i] = weight[i] > 1e-6 ? accum[i] / weight[i] : 0;
+  }
+
+  // Denormalize + assemble with format header
   let rawBytes;
 
   if (fid === FORMAT.WAV) {
     const { sr, ch, nSamp } = meta;
-    const hdr  = buildWAVHeader(nSamp, sr, ch);
-    const pcm  = new Int16Array(nChunks * C);
-    let idx = 0;
-    for (const chunk of floatOut) {
-      for (let i = 0; i < C && idx < nSamp; i++, idx++)
-        pcm[idx] = Math.round(clamp(chunk[i], -1, 1) * 32767);
-    }
+    const hdr = buildWAVHeader(nSamp, sr, ch);
+    const pcm = new Int16Array(nSamp);
+    for (let i = 0; i < nSamp; i++)
+      pcm[i] = Math.round(clamp(flatOut[i], -1, 1) * 32767);
     rawBytes = new Uint8Array(hdr.length + pcm.buffer.byteLength);
     rawBytes.set(hdr, 0);
     rawBytes.set(new Uint8Array(pcm.buffer), hdr.length);
@@ -1522,25 +1558,18 @@ async function runGeneration() {
   } else if (fid === FORMAT.BMP) {
     const { w, h } = meta;
     const rowSize = Math.ceil(w * 3 / 4) * 4;
-    const hdr  = buildBMPHeader(w, h);
-    const pix  = new Uint8Array(rowSize * h);
-    let idx = 0;
-    for (const chunk of floatOut) {
-      for (let i = 0; i < C && idx < pix.length; i++, idx++)
-        pix[idx] = clamp(Math.round((chunk[i] + 1) * 127.5), 0, 255);
-    }
+    const hdr = buildBMPHeader(w, h);
+    const pix = new Uint8Array(rowSize * h);
+    for (let i = 0; i < pix.length; i++)
+      pix[i] = clamp(Math.round((flatOut[i] + 1) * 127.5), 0, 255);
     rawBytes = new Uint8Array(hdr.length + pix.length);
     rawBytes.set(hdr, 0); rawBytes.set(pix, hdr.length);
 
   } else {
     // TXT / HTML
-    const maxLen = nChunks * C;
-    rawBytes = new Uint8Array(maxLen);
-    let idx = 0;
-    for (const chunk of floatOut) {
-      for (let i = 0; i < C; i++, idx++)
-        rawBytes[idx] = clamp(Math.round((chunk[i] + 1) * 127.5), 0, 255);
-    }
+    rawBytes = new Uint8Array(flatOut.length);
+    for (let i = 0; i < flatOut.length; i++)
+      rawBytes[i] = clamp(Math.round((flatOut[i] + 1) * 127.5), 0, 255);
   }
 
   OUTPUT.bytes = rawBytes;

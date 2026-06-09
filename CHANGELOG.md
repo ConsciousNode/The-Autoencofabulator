@@ -4,6 +4,20 @@ All notable changes documented here.
 
 ---
 
+## [0.1.1] — 2026-06-08
+
+### Fixed
+
+- **WAV/BMP chunk seam artifacts via OLA (overlap-add).** Previously, generated chunks were chained independently — each starting from its own pure noise with zero knowledge of adjacent chunks. For WAV this produced audible clicks at every ~11.6ms boundary (~86Hz artifact). For BMP it produced faint discontinuities at pixel row boundaries.
+
+  Now uses **triangular-windowed overlap-add** at 50% overlap (hop size = 128) for WAV and BMP formats. The triangular window satisfies perfect reconstruction: `w[i] + w[i + CHUNK/2] = 1` for all `i`, meaning the overlap-add sum normalizes back to 1 at every position. Seams become smooth crossfades.
+
+  TXT/HTML retain simple chaining — byte boundaries are invisible for text formats, OLA would add overhead without benefit.
+
+  Trade-off: WAV and BMP generation now runs ~2× more forward passes (correct output over speed — optimization deferred to v0.2).
+
+---
+
 ## [0.1] — 2026-06-07
 
 ### Initial release
