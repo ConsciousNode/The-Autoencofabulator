@@ -159,11 +159,23 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 | Version | Target |
 |---------|--------|
-| **v0.2** | WAV: pitch/tempo conditioning · BMP: palette/mood conditioning · audio preview in browser |
-| **v0.3** | Transfer: inject Simulacra RWKV state as text conditioning for TXT/HTML |
-| **v0.4** | PNG: diffuse in uncompressed RGB, zlib-compress on export |
-| **v0.5** | Multi-format co-training; shared ScoreNet across all formats |
-| *research* | EXE: valid space mapping, section-aware diffusion — strict validation required |
+| **v0.1** | TXT + HTML + BMP + WAV · ScoreNet · DDPM · validation · `.fabula` I/O |
+| **v0.1.1** | OLA chunk seam fix — triangular-windowed overlap-add for WAV/BMP ✓ |
+| **v0.1.2** | Per-file semantic tagging + auto-tag from filename ✓ |
+| **v0.2** | **ElasticTok** for BMP (spatial patch chunking, preserves 2D topology) · **SpikeVox** for WAV (LIF spike encoding, structured audio representation) · Code corpus (C, Python, Rust, JS as TXT) |
+| **v0.3** | Compiler-as-validator — generate source → compile → result as validation signal |
+| **v0.4** | Compiler feedback loop — error messages as fine-tuning signal; model learns syntactic validity |
+| **v0.5** | PNG · Multi-format co-training |
+| **v0.6** | Transfer: Simulacra RWKV state as text conditioning |
+| *research* | **EXE via compiled source** — diffuse source code, compile to binary. The binary was never the goal; the *program* was. |
+
+### The EXE reframe
+
+The original EXE target assumed binary diffusion — valid space too narrow, header synthesis too hard. The correct path: train on source code → compiler validates output → compiler errors become training signal → compile to binary as post-generation step. We already have a diffusion model that generates text. The EXE goal was always a code generation problem wearing a diffusion model's clothes.
+
+### ElasticTok + SpikeVox
+
+Current BMP chunking ignores 2D spatial structure — arbitrary byte cuts destroy row topology. **ElasticTok** patches into aligned 2D tiles so each chunk represents a coherent image region. Current WAV diffusion targets raw PCM directly — a brutal objective. **SpikeVox** LIF encoding converts samples to sparse spike trains: structured, event-driven, more learnable. Both already implemented in FPSS — v0.2 is a port and integration job.
 
 ---
 

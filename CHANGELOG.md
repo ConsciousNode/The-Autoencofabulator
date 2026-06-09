@@ -4,6 +4,18 @@ All notable changes documented here.
 
 ---
 
+## [0.1.2] — 2026-06-08
+
+### Added
+
+- **Per-file semantic tagging (Approach A).** Each corpus file entry now has an editable tag input field below the filename. Tags update live — `updateFileTags()` recomputes `tagIds` on every keystroke. Training loop now samples `tagIds` from the corpus entry rather than always passing `[]`. Model learns tag→output associations proportional to corpus diversity and tag quality.
+
+- **Auto-tag from filename (Approach B).** `autoTagFromFilename()` strips the file extension, splits on `_`, `-`, `.`, and space, lowercases, and matches tokens against the 256-word semantic vocabulary. Pre-populates the tag input on load. `dark_ambient_loop.wav` → `dark ambient`. User can edit, extend, or clear at will. Unknown tokens still get hashed into embedding space — graceful degradation.
+
+- **Null filter in training loop.** `CORPUS` entries set to `null` on file removal are now filtered before building the chunk pool.
+
+---
+
 ## [0.1.1] — 2026-06-08
 
 ### Fixed
