@@ -515,6 +515,7 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         <div class="progress-wrap" style="margin-top:10px;">
           <div class="progress-bar" id="gen-progress"></div>
         </div>
+        <div id="gen-progress-text" style="font-size:10px;color:var(--text-muted);margin-top:4px;letter-spacing:0.06em;">—</div>
       </div>
 
       <div class="panel">
@@ -597,7 +598,7 @@ const CFG = {
   SEM_DIM:    32,
   T_DIM:      64,
   N_FORMATS:  4,
-  VOCAB:      256,
+  VOCAB:      0,        // set after VOCAB_WORDS definition
   LR:         1e-4,
   BETA_START: 1e-4,
   BETA_END:   0.02,
@@ -638,7 +639,11 @@ const VOCAB_WORDS = [
   'linear','circular','spiral','fractal','random','periodic','aperiodic','stochastic','deterministic','chaotic',
   'heavy','light','dense','airy','deep','shallow','wide','narrow','tall','short',
   'electric','acoustic','magnetic','optical','thermal','mechanical','chemical','quantum','classical','digital',
+  'pulsing','fading','rising','falling','shifting','blending',
 ];
+
+// Derive VOCAB size from actual word list — stays in sync automatically
+CFG.VOCAB = VOCAB_WORDS.length;
 
 function tagToIds(tagStr) {
   if (!tagStr.trim()) return [];
@@ -1406,20 +1411,26 @@ async function trainingLoop() {
   document.getElementById('btn-start').disabled = true;
   document.getElementById('btn-pause').disabled = false;
 
-  const allChunks = [];
-  for (const entry of CORPUS) {
-    if (!entry) continue;
-    for (const c of entry.chunks)
-      allChunks.push({ chunk: c, fid: entry.fid, tagIds: entry.tagIds || [] });
-  }
-  if (!allChunks.length) { setStatus('', 'No chunks.'); return; }
+  // Check there's something to train on
+  let hasChunks = false;
+  for (const e of CORPUS) if (e && e.chunks.length) { hasChunks = true; break; }
+  if (!hasChunks) { setStatus('', 'No chunks. Add files first.'); return; }
 
   TRAIN.running      = true;
   TRAIN._should_pause = false;
 
   while (TRAIN.running && !TRAIN._should_pause) {
+    // Live corpus sampling — rebuilds pool each step so new files are seen immediately
+    const pool = [];
+    for (const entry of CORPUS) {
+      if (!entry) continue;
+      for (const c of entry.chunks)
+        pool.push({ chunk: c, fid: entry.fid, tagIds: entry.tagIds || [] });
+    }
+    if (!pool.length) { setStatus('paused', 'Corpus empty — add files to continue.'); break; }
+
     // Sample random chunk + its tags
-    const { chunk, fid, tagIds } = allChunks[Math.floor(Math.random() * allChunks.length)];
+    const { chunk, fid, tagIds } = pool[Math.floor(Math.random() * pool.length)];
     const t = 1 + Math.floor(Math.random() * CFG.T);
 
     // Forward diffusion
@@ -1531,7 +1542,9 @@ async function runGeneration() {
     for (let c = 0; c < nChunks; c++) {
       const xt = await genChunk();
       flatOut.set(xt, c * CFG.CHUNK);
-      document.getElementById('gen-progress').style.width = ((c+1)/nChunks*100).toFixed(0)+'%';
+      const pct = ((c+1)/nChunks*100).toFixed(0);
+      document.getElementById('gen-progress').style.width = pct+'%';
+      document.getElementById('gen-progress-text').textContent = `Chunk ${c+1} / ${nChunks} (${pct}%)`;
       if (c % 2 === 0) await yieldToMain();
     }
 
@@ -1553,7 +1566,9 @@ async function runGeneration() {
         accum[offset+i]  += xt[i] * triWin[i];
         weight[offset+i] += triWin[i];
       }
-      document.getElementById('gen-progress').style.width = ((c+1)/nOLA*100).toFixed(0)+'%';
+      const pct = ((c+1)/nOLA*100).toFixed(0);
+      document.getElementById('gen-progress').style.width = pct+'%';
+      document.getElementById('gen-progress-text').textContent = `Chunk ${c+1} / ${nOLA} — OLA (${pct}%)`;
       if (c % 2 === 0) await yieldToMain();
     }
 
@@ -1607,6 +1622,7 @@ async function runGeneration() {
   document.getElementById('btn-generate').disabled = false;
   document.getElementById('btn-download').disabled = false;
   document.getElementById('gen-progress').style.width = '100%';
+  document.getElementById('gen-progress-text').textContent = 'Done.';
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1726,8 +1742,7 @@ function switchTab(name) {
 
 function setStatus(cls, msg) {
   const el = document.getElementById('train-status');
-  el.className = 'train-status' + (cls ? ' ' + cls : '');
-  el.id = 'train-status';
+  el.className = cls || '';
   el.textContent = msg;
 }
 
@@ -1747,7 +1762,7 @@ function updateTrainUI(loss) {
   hL.textContent = lStr;
 
   let totalChunks = 0;
-  for (const e of CORPUS) totalChunks += e.chunks.length;
+  for (const e of CORPUS) if (e) totalChunks += e.chunks.length;
   hC.textContent = totalChunks;
 
   mS.textContent  = TRAIN.steps;
