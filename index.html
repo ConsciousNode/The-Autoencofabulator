@@ -197,10 +197,33 @@ header {
 #file-list { display: flex; flex-direction: column; gap: 4px; }
 
 .file-entry {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--panel); padding: 6px 10px;
+  background: var(--panel);
   border: 1px solid var(--border); font-size: 11px;
 }
+
+.file-entry-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+}
+
+.file-entry-tags {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 10px 6px;
+  border-top: 1px solid var(--border);
+}
+
+.tag-label {
+  font-size: 9px; letter-spacing: 0.12em; color: var(--text-muted);
+  flex-shrink: 0; text-transform: uppercase;
+}
+
+.tag-input {
+  flex: 1; background: transparent; border: none;
+  color: var(--text-dim); font-family: var(--mono); font-size: 10px;
+  outline: none; padding: 0;
+}
+.tag-input:focus { color: var(--text); }
+.tag-input::placeholder { color: var(--text-muted); }
 
 .file-entry .fname { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-entry .fsize { color: var(--text-muted); }
@@ -1385,7 +1408,9 @@ async function trainingLoop() {
 
   const allChunks = [];
   for (const entry of CORPUS) {
-    for (const c of entry.chunks) allChunks.push({ chunk: c, fid: entry.fid });
+    if (!entry) continue;
+    for (const c of entry.chunks)
+      allChunks.push({ chunk: c, fid: entry.fid, tagIds: entry.tagIds || [] });
   }
   if (!allChunks.length) { setStatus('', 'No chunks.'); return; }
 
@@ -1393,15 +1418,12 @@ async function trainingLoop() {
   TRAIN._should_pause = false;
 
   while (TRAIN.running && !TRAIN._should_pause) {
-    // Sample random chunk
-    const { chunk, fid } = allChunks[Math.floor(Math.random() * allChunks.length)];
+    // Sample random chunk + its tags
+    const { chunk, fid, tagIds } = allChunks[Math.floor(Math.random() * allChunks.length)];
     const t = 1 + Math.floor(Math.random() * CFG.T);
 
     // Forward diffusion
     const { xt, noise } = DIFF.forward(chunk, t);
-
-    // Tags: empty during training (unconditional for now)
-    const tagIds = [];
 
     // ScoreNet forward
     const epsPred = MODEL.forward(xt, t, fid, tagIds);
@@ -1779,6 +1801,14 @@ function resetModel() {
 // ════════════════════════════════════════════════════════════════════
 // FILE HANDLING
 // ════════════════════════════════════════════════════════════════════
+
+// Approach B: extract vocab words from filename automatically
+function autoTagFromFilename(name) {
+  const stem   = name.replace(/\.[^.]+$/, '').toLowerCase();
+  const tokens = stem.split(/[\s_\-\.]+/);
+  const matched = [...new Set(tokens.filter(t => VOCAB_WORDS.includes(t)))];
+  return matched.join(' ');
+}
 async function addFile(file) {
   const fid = detectFormat(file);
   const result = await parseFile(file, fid);
@@ -1790,25 +1820,41 @@ async function addFile(file) {
 
   if (!result.ok) {
     entry.innerHTML = `
-      <span class="fbadge badge-skip">${FMT_NAME[fid].toUpperCase()}</span>
-      <span class="fname">${esc(file.name)}</span>
-      <span class="fsize">${fmtSize(file.size)}</span>
-      <span class="fstatus bad">✗ ${esc(result.reason)}</span>
+      <div class="file-entry-header">
+        <span class="fbadge badge-skip">${FMT_NAME[fid].toUpperCase()}</span>
+        <span class="fname">${esc(file.name)}</span>
+        <span class="fsize">${fmtSize(file.size)}</span>
+        <span class="fstatus bad">✗ ${esc(result.reason)}</span>
+      </div>
     `;
     document.getElementById('file-list').appendChild(entry);
     return;
   }
 
-  const corpusEntry = { fid, chunks: result.chunks, meta: result.meta, name: file.name };
+  // Auto-tag from filename (Approach B)
+  const autoTags = autoTagFromFilename(file.name);
+
+  const corpusEntry = {
+    fid, chunks: result.chunks, meta: result.meta, name: file.name,
+    tagStr: autoTags, tagIds: tagToIds(autoTags)
+  };
   CORPUS.push(corpusEntry);
   const corpusIdx = CORPUS.length - 1;
 
   entry.innerHTML = `
-    <span class="fbadge ${badgeClass}">${FMT_NAME[fid].toUpperCase()}</span>
-    <span class="fname">${esc(file.name)}</span>
-    <span class="fsize">${fmtSize(file.size)}</span>
-    <span class="fstatus ok">✓ ${result.chunks.length} chunks</span>
-    <span class="fclose" onclick="removeFile(${corpusIdx}, this.parentElement)">×</span>
+    <div class="file-entry-header">
+      <span class="fbadge ${badgeClass}">${FMT_NAME[fid].toUpperCase()}</span>
+      <span class="fname">${esc(file.name)}</span>
+      <span class="fsize">${fmtSize(file.size)}</span>
+      <span class="fstatus ok">✓ ${result.chunks.length} chunks</span>
+      <span class="fclose" onclick="removeFile(${corpusIdx}, this.closest('.file-entry'))">×</span>
+    </div>
+    <div class="file-entry-tags">
+      <span class="tag-label">Tags</span>
+      <input class="tag-input" type="text" value="${esc(autoTags)}"
+        placeholder="upbeat, dark, jazz, minimal..."
+        oninput="updateFileTags(${corpusIdx}, this.value)">
+    </div>
   `;
   document.getElementById('file-list').appendChild(entry);
 
@@ -1825,6 +1871,12 @@ function removeFile(idx, el) {
   for (const e of CORPUS) if (e) tc += e.chunks.length;
   document.getElementById('h-corpus').textContent = tc;
   document.getElementById('m-chunks').textContent = tc;
+}
+
+function updateFileTags(idx, tagStr) {
+  if (!CORPUS[idx]) return;
+  CORPUS[idx].tagStr = tagStr;
+  CORPUS[idx].tagIds = tagToIds(tagStr);
 }
 
 // ════════════════════════════════════════════════════════════════════
