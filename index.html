@@ -7,16 +7,22 @@
 <style>
 /*
   ╔══════════════════════════════════════════════════════════════════════╗
-  ║ AUTOENCOFABULATOR v0.1 — ConsciousNode SoftWorks                    ║
+  ║ AUTOENCOFABULATOR v0.2 — ConsciousNode SoftWorks                    ║
   ║ Kham (Khamerron Ramsey Kizer) · Ed Interim                          ║
   ║                                                                      ║
   ║ A browser-native diffusion model. Trains on your files.             ║
   ║ Generates new ones. Never leaves the browser.                       ║
   ║                                                                      ║
-  ║ ScoreNet: BitLinear / LayerNorm / Adam — from Simulacra             ║
-  ║ AdaLN: conditioning pattern — from OmniVocal                        ║
-  ║ Validation: magic bytes / ROSA / Shannon — from Once Bytten         ║
+  ║ ScoreNet v0.2: 4-layer, 768-dim, double AdaLN (from Simulacra)      ║
+  ║ ElasticTok: 8×8 spatial BMP patches + position conditioning         ║
+  ║   (ported from FPSS — Kehai Interim)                                ║
+  ║ SpikeVox: LIF audio encoding + sinusoidal decode                    ║
+  ║   (ported from FPSS — Kehai Interim)                                ║
+  ║ Validation: magic bytes / ROSA / Shannon (from Once Bytten)         ║
   ║ Diffusion: DDPM (Ho et al. 2020) — browser-native, zero deps        ║
+  ║                                                                      ║
+  ║ NOTE: v0.2 .fabula files are NOT compatible with v0.1               ║
+  ║ (ScoreNet architecture changed — wider, deeper, cDim=50)            ║
   ║                                                                      ║
   ║ Xinu-compliant. Zero dependencies. Single file. MIT License.        ║
   ╚══════════════════════════════════════════════════════════════════════╝
@@ -53,7 +59,6 @@ html, body {
   overflow: hidden;
 }
 
-/* scanline */
 body::after {
   content: '';
   position: fixed; inset: 0;
@@ -64,20 +69,9 @@ body::after {
   pointer-events: none; z-index: 9999;
 }
 
-/* noise overlay */
-body::before {
-  content: '';
-  position: fixed; inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-  pointer-events: none; z-index: 9998; opacity: 0.4;
-}
+#app { display: flex; flex-direction: column; width: 100%; height: 100%; }
 
-#app {
-  display: flex; flex-direction: column;
-  width: 100%; height: 100%;
-}
-
-/* ── HEADER ────────────────────────────────────────────────────────── */
+/* HEADER */
 header {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -85,35 +79,19 @@ header {
   display: flex; align-items: center; justify-content: space-between;
   flex-shrink: 0; gap: 8px; flex-wrap: wrap;
 }
-
-.logo {
-  display: flex; align-items: baseline; gap: 6px; flex-shrink: 0;
-}
-
+.logo { display: flex; align-items: baseline; gap: 6px; flex-shrink: 0; }
 .logo-name {
   font-size: 13px; font-weight: bold; letter-spacing: 0.08em;
   color: var(--accent-hi);
   text-shadow: 0 0 12px rgba(124,92,252,0.5);
 }
-
-.logo-ver {
-  font-size: 10px; color: var(--text-dim); letter-spacing: 0.1em;
-}
-
+.logo-ver { font-size: 10px; color: var(--text-dim); letter-spacing: 0.1em; }
 .logo-tag {
   font-size: 9px; color: var(--text-muted);
-  border: 1px solid var(--border); padding: 1px 5px;
-  letter-spacing: 0.08em;
+  border: 1px solid var(--border); padding: 1px 5px; letter-spacing: 0.08em;
 }
-
-@media (max-width: 420px) {
-  .logo-tag { display: none; }
-}
-
-.header-stats {
-  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-}
-
+@media (max-width: 420px) { .logo-tag { display: none; } }
+.header-stats { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .stat {
   font-size: 10px; color: var(--text-dim);
   background: var(--panel); border: 1px solid var(--border);
@@ -121,14 +99,13 @@ header {
 }
 .stat span { color: var(--signal); }
 
-/* ── TABS ──────────────────────────────────────────────────────────── */
+/* TABS */
 .tabbar {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   display: flex; gap: 2px; padding: 0 12px;
   flex-shrink: 0;
 }
-
 .tab {
   padding: 8px 16px; font-size: 11px; letter-spacing: 0.1em;
   color: var(--text-dim); cursor: pointer; border: none;
@@ -136,37 +113,29 @@ header {
   border-bottom: 2px solid transparent;
   transition: color 0.15s, border-color 0.15s;
 }
-
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent-hi); border-bottom-color: var(--accent); }
 
-/* ── MAIN LAYOUT ───────────────────────────────────────────────────── */
-.main {
-  flex: 1; overflow: hidden;
-  display: flex;
-}
-
+/* MAIN */
+.main { flex: 1; overflow: hidden; display: flex; }
 .pane {
   display: none; flex: 1; overflow-y: auto;
-  padding: 16px; gap: 14px;
-  flex-direction: column;
+  padding: 16px; gap: 14px; flex-direction: column;
 }
 .pane.active { display: flex; }
 
-/* ── PANELS ────────────────────────────────────────────────────────── */
+/* PANELS */
 .panel {
   background: var(--surface);
-  border: 1px solid var(--border);
-  padding: 14px;
+  border: 1px solid var(--border); padding: 14px;
 }
-
 .panel-title {
   font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase;
   color: var(--text-dim); margin-bottom: 12px;
   padding-bottom: 6px; border-bottom: 1px solid var(--border);
 }
 
-/* ── DROP ZONE ─────────────────────────────────────────────────────── */
+/* DROP ZONE */
 #drop-zone {
   border: 1px dashed var(--border-hi);
   padding: 28px 16px; text-align: center;
@@ -174,124 +143,65 @@ header {
   transition: border-color 0.15s, background 0.15s;
   background: var(--panel);
 }
-
 #drop-zone:hover, #drop-zone.drag-over {
-  border-color: var(--accent); background: rgba(124,92,252,0.06);
-  color: var(--text);
+  border-color: var(--accent); background: rgba(124,92,252,0.06); color: var(--text);
 }
+#drop-zone .drop-icon { font-size: 28px; display: block; margin-bottom: 8px; opacity: 0.5; }
+#drop-zone .drop-hint { font-size: 11px; letter-spacing: 0.05em; }
+#drop-zone .drop-formats { font-size: 10px; color: var(--text-muted); margin-top: 6px; letter-spacing: 0.08em; }
 
-#drop-zone .drop-icon {
-  font-size: 28px; display: block; margin-bottom: 8px; opacity: 0.5;
-}
-
-#drop-zone .drop-hint {
-  font-size: 11px; letter-spacing: 0.05em;
-}
-
-#drop-zone .drop-formats {
-  font-size: 10px; color: var(--text-muted); margin-top: 6px;
-  letter-spacing: 0.08em;
-}
-
-/* ── FILE LIST ─────────────────────────────────────────────────────── */
+/* FILE LIST */
 #file-list { display: flex; flex-direction: column; gap: 4px; }
-
-.file-entry {
-  background: var(--panel);
-  border: 1px solid var(--border); font-size: 11px;
-}
-
-.file-entry-header {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px;
-}
-
+.file-entry { background: var(--panel); border: 1px solid var(--border); font-size: 11px; }
+.file-entry-header { display: flex; align-items: center; gap: 8px; padding: 6px 10px; }
 .file-entry-tags {
   display: flex; align-items: center; gap: 8px;
-  padding: 3px 10px 6px;
-  border-top: 1px solid var(--border);
+  padding: 3px 10px 6px; border-top: 1px solid var(--border);
 }
-
-.tag-label {
-  font-size: 9px; letter-spacing: 0.12em; color: var(--text-muted);
-  flex-shrink: 0; text-transform: uppercase;
-}
-
+.tag-label { font-size: 9px; letter-spacing: 0.12em; color: var(--text-muted); flex-shrink: 0; text-transform: uppercase; }
 .tag-input {
   flex: 1; background: transparent; border: none;
-  color: var(--text-dim); font-family: var(--mono); font-size: 10px;
-  outline: none; padding: 0;
+  color: var(--text-dim); font-family: var(--mono); font-size: 10px; outline: none; padding: 0;
 }
 .tag-input:focus { color: var(--text); }
 .tag-input::placeholder { color: var(--text-muted); }
-
-.file-entry .fname { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-entry .fsize { color: var(--text-muted); }
-.file-entry .fbadge {
-  padding: 1px 6px; font-size: 10px; letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
+.fname { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fsize { color: var(--text-muted); }
+.fbadge { padding: 1px 6px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
 .badge-txt { background: rgba(45,224,165,0.15); color: var(--signal); border: 1px solid var(--signal-lo); }
 .badge-html { background: rgba(124,92,252,0.15); color: var(--accent-hi); border: 1px solid var(--accent-lo); }
 .badge-bmp { background: rgba(240,165,0,0.15); color: var(--warn); border: 1px solid #5a3e00; }
 .badge-wav { background: rgba(255,59,110,0.15); color: var(--danger); border: 1px solid var(--danger-lo); }
 .badge-skip { background: rgba(61,55,96,0.3); color: var(--text-muted); border: 1px solid var(--border); }
+.fstatus { font-size: 10px; color: var(--text-muted); }
+.fstatus.ok { color: var(--signal); }
+.fstatus.bad { color: var(--danger); }
+.fclose { cursor: pointer; color: var(--text-muted); padding: 0 4px; }
+.fclose:hover { color: var(--danger); }
 
-.file-entry .fstatus { font-size: 10px; color: var(--text-muted); }
-.file-entry .fstatus.ok { color: var(--signal); }
-.file-entry .fstatus.bad { color: var(--danger); }
-.file-entry .fclose { cursor: pointer; color: var(--text-muted); padding: 0 4px; }
-.file-entry .fclose:hover { color: var(--danger); }
-
-/* ── CONTROLS ──────────────────────────────────────────────────────── */
-.ctrl-row {
-  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-}
-
+/* CONTROLS */
+.ctrl-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .btn {
   padding: 7px 16px; font-size: 11px; letter-spacing: 0.1em;
   text-transform: uppercase; cursor: pointer;
   border: 1px solid var(--border-hi); background: var(--panel);
-  color: var(--text); font-family: var(--mono);
-  transition: all 0.12s;
+  color: var(--text); font-family: var(--mono); transition: all 0.12s;
 }
-
 .btn:hover { border-color: var(--accent); color: var(--accent-hi); }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .btn:disabled:hover { border-color: var(--border-hi); color: var(--text); }
-
-.btn-primary {
-  background: var(--accent-lo); border-color: var(--accent);
-  color: var(--accent-hi);
-}
+.btn-primary { background: var(--accent-lo); border-color: var(--accent); color: var(--accent-hi); }
 .btn-primary:hover { background: rgba(124,92,252,0.25); }
-
-.btn-signal {
-  background: var(--signal-lo); border-color: var(--signal);
-  color: var(--signal);
-}
+.btn-signal { background: var(--signal-lo); border-color: var(--signal); color: var(--signal); }
 .btn-signal:hover { background: rgba(45,224,165,0.2); }
+.btn-danger { background: var(--danger-lo); border-color: var(--danger); color: var(--danger); }
 
-.btn-danger {
-  background: var(--danger-lo); border-color: var(--danger);
-  color: var(--danger);
-}
-
-/* ── LOSS CANVAS ───────────────────────────────────────────────────── */
-#loss-canvas {
-  width: 100%; height: 80px;
-  background: var(--panel); border: 1px solid var(--border);
-  display: block;
-}
-
-.loss-row {
-  display: flex; justify-content: space-between;
-  font-size: 10px; color: var(--text-muted); margin-top: 4px;
-}
-
+/* LOSS CANVAS */
+#loss-canvas { width: 100%; height: 80px; background: var(--panel); border: 1px solid var(--border); display: block; }
+.loss-row { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-top: 4px; }
 .loss-val { color: var(--signal); font-size: 12px; }
 
-/* ── TRAINING STATUS ───────────────────────────────────────────────── */
+/* TRAIN STATUS */
 #train-status {
   font-size: 11px; padding: 8px 10px;
   background: var(--panel); border: 1px solid var(--border);
@@ -300,89 +210,66 @@ header {
 #train-status.running { color: var(--signal); border-color: var(--signal-lo); }
 #train-status.paused { color: var(--warn); border-color: #5a3e00; }
 
-/* ── GENERATE FORM ─────────────────────────────────────────────────── */
-.form-row {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
-}
-
-.form-label {
-  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--text-dim); min-width: 80px;
-}
-
+/* FORM */
+.form-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.form-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); min-width: 80px; }
 .form-input, .form-select {
   background: var(--panel); border: 1px solid var(--border);
-  color: var(--text); padding: 6px 10px; font-family: var(--mono);
-  font-size: 12px; flex: 1;
+  color: var(--text); padding: 6px 10px; font-family: var(--mono); font-size: 12px; flex: 1;
 }
-
-.form-input:focus, .form-select:focus {
-  outline: none; border-color: var(--accent);
-}
-
+.form-input:focus, .form-select:focus { outline: none; border-color: var(--accent); }
 .form-select option { background: var(--panel); }
-
 .size-controls { display: flex; gap: 8px; flex: 1; }
 .size-controls .form-input { flex: 1; }
 
-/* ── PROGRESS BAR ──────────────────────────────────────────────────── */
-.progress-wrap {
-  background: var(--panel); border: 1px solid var(--border);
-  height: 4px; overflow: hidden;
-}
+/* PROGRESS */
+.progress-wrap { background: var(--panel); border: 1px solid var(--border); height: 4px; overflow: hidden; }
+.progress-bar { height: 100%; background: var(--accent); width: 0%; transition: width 0.1s linear; }
 
-.progress-bar {
-  height: 100%; background: var(--accent);
-  width: 0%; transition: width 0.1s linear;
-}
-
-/* ── OUTPUT PREVIEW ────────────────────────────────────────────────── */
+/* OUTPUT */
 #output-preview {
   background: var(--panel); border: 1px solid var(--border);
-  min-height: 80px; padding: 10px;
-  font-size: 11px; color: var(--text-dim);
-  overflow: auto; max-height: 200px;
-  white-space: pre-wrap; word-break: break-all;
+  min-height: 80px; padding: 10px; font-size: 11px; color: var(--text-dim);
+  overflow: auto; max-height: 200px; white-space: pre-wrap; word-break: break-all;
 }
+#bmp-preview-canvas { display: none; max-width: 100%; border: 1px solid var(--border); image-rendering: pixelated; }
+#html-preview-frame {
+  display: none; width: 100%; height: 200px;
+  border: 1px solid var(--border); background: #fff;
+}
+#wav-player { display: none; margin-top: 8px; }
+#wav-player .wav-controls { display: flex; gap: 8px; align-items: center; }
+#wav-note { font-size: 10px; color: var(--text-muted); margin-top: 4px; letter-spacing: 0.04em; }
 
-#bmp-preview-canvas {
-  display: none;
-  max-width: 100%; border: 1px solid var(--border);
-  image-rendering: pixelated;
-}
-
-/* ── VALIDATE ──────────────────────────────────────────────────────── */
-.check-row {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 8px 0; border-bottom: 1px solid var(--border);
-}
+/* VALIDATE */
+.check-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .check-row:last-child { border-bottom: none; }
 .check-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
 .check-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
 .check-value { font-size: 11px; color: var(--text); margin-top: 2px; }
-
 .verdict {
   padding: 10px 14px; font-size: 13px; letter-spacing: 0.1em;
-  text-align: center; text-transform: uppercase; font-weight: bold;
-  margin-top: 8px;
+  text-align: center; text-transform: uppercase; font-weight: bold; margin-top: 8px;
 }
 .verdict-pass { background: var(--signal-lo); color: var(--signal); border: 1px solid var(--signal); }
 .verdict-warn { background: rgba(240,165,0,0.1); color: var(--warn); border: 1px solid var(--warn); }
 .verdict-fail { background: var(--danger-lo); color: var(--danger); border: 1px solid var(--danger); }
 .verdict-none { background: var(--panel); color: var(--text-muted); border: 1px solid var(--border); }
 
-/* ── MODEL STATUS ──────────────────────────────────────────────────── */
-.model-stat-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
-}
-.model-stat {
-  background: var(--panel); border: 1px solid var(--border);
-  padding: 8px 10px;
-}
+/* MODEL STATS */
+.model-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.model-stat { background: var(--panel); border: 1px solid var(--border); padding: 8px 10px; }
 .model-stat-key { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); }
 .model-stat-val { font-size: 13px; color: var(--accent-hi); margin-top: 3px; }
 
-/* ── CREDIT ────────────────────────────────────────────────────────── */
+/* ENCODING BADGES */
+.enc-badge {
+  font-size: 9px; padding: 1px 5px; letter-spacing: 0.08em;
+  background: rgba(124,92,252,0.1); color: var(--accent-hi);
+  border: 1px solid var(--accent-lo);
+}
+
+/* FOOTER */
 footer {
   background: var(--surface); border-top: 1px solid var(--border);
   padding: 4px 12px; font-size: 9px; color: var(--text-muted);
@@ -397,7 +284,7 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   <header>
     <div class="logo">
       <span class="logo-name">AUTOENCOFABULATOR</span>
-      <span class="logo-ver">v0.1</span>
+      <span class="logo-ver">v0.2</span>
       <span class="logo-tag">XINU</span>
       <span class="logo-tag">ZERO DEPS</span>
     </div>
@@ -417,7 +304,7 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   <div class="main">
 
-    <!-- ── TRAIN ── -->
+    <!-- TRAIN -->
     <div class="pane active" id="pane-train">
       <div class="panel">
         <div class="panel-title">Training Corpus</div>
@@ -428,7 +315,6 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         </div>
         <div id="file-list" style="margin-top:8px;"></div>
       </div>
-
       <div class="panel">
         <div class="panel-title">Training</div>
         <div id="train-status">Ready. Add files and press START.</div>
@@ -447,46 +333,40 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       </div>
     </div>
 
-    <!-- ── GENERATE ── -->
+    <!-- GENERATE -->
     <div class="pane" id="pane-generate">
       <div class="panel">
         <div class="panel-title">Generation Parameters</div>
-
         <div class="form-row">
           <span class="form-label">Format</span>
           <select class="form-select" id="gen-format" onchange="updateSizeControls()">
             <option value="0">TXT — Plain Text</option>
             <option value="1">HTML — Single-file artifact</option>
-            <option value="2">BMP — Bitmap image</option>
-            <option value="3">WAV — Audio (PCM)</option>
+            <option value="2">BMP — Bitmap image (ElasticTok)</option>
+            <option value="3">WAV — Audio (SpikeVox)</option>
           </select>
         </div>
-
         <div class="form-row">
           <span class="form-label">Tags</span>
           <input class="form-input" id="gen-tags" type="text"
             placeholder="upbeat, jazz, minimal, dark, calculator...">
         </div>
-
         <div class="form-row" id="size-row-text">
           <span class="form-label">Length</span>
           <div class="size-controls">
-            <input class="form-input" id="gen-chars" type="number"
-              value="512" min="64" max="4096" step="64">
+            <input class="form-input" id="gen-chars" type="number" value="512" min="64" max="4096" step="64">
             <span style="align-self:center;color:var(--text-dim);font-size:11px;">chars</span>
           </div>
         </div>
-
         <div class="form-row" id="size-row-bmp" style="display:none;">
           <span class="form-label">Dimensions</span>
           <div class="size-controls">
-            <input class="form-input" id="gen-bmp-w" type="number" value="64" min="16" max="256" step="8">
+            <input class="form-input" id="gen-bmp-w" type="number" value="64" min="8" max="256" step="8">
             <span style="align-self:center;color:var(--text-dim);">×</span>
-            <input class="form-input" id="gen-bmp-h" type="number" value="64" min="16" max="256" step="8">
-            <span style="align-self:center;color:var(--text-dim);font-size:11px;">px</span>
+            <input class="form-input" id="gen-bmp-h" type="number" value="64" min="8" max="256" step="8">
+            <span style="align-self:center;color:var(--text-dim);font-size:11px;">px (8px grid)</span>
           </div>
         </div>
-
         <div class="form-row" id="size-row-wav" style="display:none;">
           <span class="form-label">Duration</span>
           <div class="size-controls">
@@ -499,7 +379,6 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             </select>
           </div>
         </div>
-
         <div class="form-row">
           <span class="form-label">Steps</span>
           <div class="size-controls">
@@ -507,11 +386,9 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             <span style="align-self:center;color:var(--text-dim);font-size:11px;">/ 200 max</span>
           </div>
         </div>
-
         <div class="ctrl-row" style="margin-top:10px;">
           <button class="btn btn-signal" id="btn-generate" onclick="runGeneration()">Generate</button>
         </div>
-
         <div class="progress-wrap" style="margin-top:10px;">
           <div class="progress-bar" id="gen-progress"></div>
         </div>
@@ -521,14 +398,22 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       <div class="panel">
         <div class="panel-title">Output</div>
         <canvas id="bmp-preview-canvas"></canvas>
+        <iframe id="html-preview-frame" sandbox="allow-scripts"></iframe>
         <div id="output-preview">No output yet. Train the model and press Generate.</div>
+        <div id="wav-player">
+          <div class="wav-controls">
+            <button class="btn" id="btn-wav-play" onclick="playGeneratedWAV()">▶ Play</button>
+            <button class="btn" id="btn-wav-stop" onclick="stopWAV()">■ Stop</button>
+          </div>
+          <div id="wav-note">Band-sinusoidal synthesis (v0.2 approximation — more training = richer texture)</div>
+        </div>
         <div class="ctrl-row" style="margin-top:10px;">
           <button class="btn" id="btn-download" onclick="downloadOutput()" disabled>Download</button>
         </div>
       </div>
     </div>
 
-    <!-- ── VALIDATE ── -->
+    <!-- VALIDATE -->
     <div class="pane" id="pane-validate">
       <div class="panel">
         <div class="panel-title">Validation Results</div>
@@ -539,7 +424,7 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       </div>
     </div>
 
-    <!-- ── MODEL ── -->
+    <!-- MODEL -->
     <div class="pane" id="pane-model">
       <div class="panel">
         <div class="panel-title">Model Statistics</div>
@@ -550,23 +435,26 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
           <div class="model-stat"><div class="model-stat-key">Best Loss</div><div class="model-stat-val" id="m-bestloss">—</div></div>
           <div class="model-stat"><div class="model-stat-key">Timesteps T</div><div class="model-stat-val">200</div></div>
           <div class="model-stat"><div class="model-stat-key">Chunk Size</div><div class="model-stat-val">256</div></div>
-          <div class="model-stat"><div class="model-stat-key">Hidden Dim</div><div class="model-stat-val">512</div></div>
+          <div class="model-stat"><div class="model-stat-key">Hidden Dim</div><div class="model-stat-val">768</div></div>
           <div class="model-stat"><div class="model-stat-key">Learn Rate</div><div class="model-stat-val">1e-4</div></div>
         </div>
       </div>
       <div class="panel">
-        <div class="panel-title">Architecture</div>
-        <div style="font-size:11px;color:var(--text-dim);line-height:1.8;">
+        <div class="panel-title">Architecture v0.2</div>
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.9;">
           <div>Input: chunk[256] + t_emb[64] + fmt_emb[16] + sem_emb[32] = <span style="color:var(--accent-hi)">368-dim</span></div>
-          <div>LayerNorm → Linear(368→512) → AdaLN(cond[48]) → SiLU</div>
-          <div>LayerNorm → Linear(512→512) → SiLU</div>
-          <div>LayerNorm → Linear(512→256) → predicted noise</div>
-          <div style="margin-top:6px;">Optimizer: <span style="color:var(--signal)">Adam</span> (β₁=0.9, β₂=0.999, ε=1e-8)</div>
-          <div>Schedule: <span style="color:var(--signal)">Linear DDPM</span> (β₁=1e-4 → β_T=0.02, T=200)</div>
+          <div>cond: fmt[16] + sem[32] + patch_r[1] + patch_c[1] = <span style="color:var(--accent-hi)">50-dim</span></div>
+          <div>LN → Linear(368→768) → <span style="color:var(--signal)">AdaLN₁(50→768)</span> → SiLU</div>
+          <div>LN → Linear(768→768) → SiLU</div>
+          <div>LN → Linear(768→512) → <span style="color:var(--signal)">AdaLN₂(50→512)</span> → SiLU</div>
+          <div>LN → Linear(512→256) → predicted noise ε</div>
+          <div style="margin-top:6px;">BMP: <span style="color:var(--warn)">ElasticTok</span> 8×8 spatial patches + position conditioning</div>
+          <div>WAV: <span style="color:var(--danger)">SpikeVox</span> LIF encoding (V_th=3.5, leak=0.95, refrac=2)</div>
         </div>
       </div>
       <div class="panel">
-        <div class="panel-title">Weights</div>
+        <div class="panel-title">Weights (.fabula v0.2)</div>
+        <div style="font-size:10px;color:var(--warn);margin-bottom:8px;">⚠ v0.2 .fabula files are not compatible with v0.1</div>
         <div class="ctrl-row">
           <button class="btn" onclick="exportWeights()">Export .fabula</button>
           <button class="btn" onclick="document.getElementById('import-input').click()">Import .fabula</button>
@@ -579,8 +467,8 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   </div>
 
   <footer>
-    <span>Autoencofabulator v0.1 · ConsciousNode SoftWorks · Kham (Khamerron Ramsey Kizer) · Ed Interim · MIT License</span>
-    <span>ScoreNet from Simulacra · AdaLN from OmniVocal · Validation from Once Bytten · DDPM (Ho et al. 2020)</span>
+    <span>Autoencofabulator v0.2 · ConsciousNode SoftWorks · Kham · Ed Interim · MIT License</span>
+    <span>ScoreNet/Adam: Simulacra · AdaLN: OmniVocal · ElasticTok/SpikeVox: FPSS (Kehai) · Validation: Once Bytten · DDPM (Ho et al. 2020)</span>
   </footer>
 </div>
 
@@ -591,26 +479,34 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 // CONFIG
 // ════════════════════════════════════════════════════════════════════
 const CFG = {
-  T:          200,
-  CHUNK:      256,
-  HID:        512,
-  FMT_DIM:    16,
-  SEM_DIM:    32,
-  T_DIM:      64,
-  N_FORMATS:  4,
-  VOCAB:      0,        // set after VOCAB_WORDS definition
-  LR:         1e-4,
-  BETA_START: 1e-4,
-  BETA_END:   0.02,
+  T:           200,
+  CHUNK:       256,
+  HID1:        768,   // first hidden dim (wider than v0.1)
+  HID2:        512,   // second hidden dim
+  FMT_DIM:     16,
+  SEM_DIM:     32,
+  T_DIM:       64,
+  POS_DIM:     2,     // patch_r, patch_c for BMP ElasticTok
+  N_FORMATS:   4,
+  VOCAB:       0,     // set after VOCAB_WORDS
+  LR:          1e-4,
+  BETA_START:  1e-4,
+  BETA_END:    0.02,
   YIELD_EVERY: 8,
-  MAX_RESAMPLE: 3,
+  PATCH_SIZE:  8,     // ElasticTok patch size (8×8px)
+  SPIKEVOX_TH: 3.5,   // LIF threshold
+  SPIKEVOX_LK: 0.95,  // LIF leak rate
+  SPIKEVOX_RF: 2,     // LIF refractory period
 };
+// Derived
+Object.defineProperty(CFG, 'C_DIM', { get: () => CFG.FMT_DIM + CFG.SEM_DIM + CFG.POS_DIM }); // 50
+Object.defineProperty(CFG, 'IN_DIM', { get: () => CFG.CHUNK + CFG.T_DIM + CFG.FMT_DIM + CFG.SEM_DIM }); // 368
 
 const FORMAT = { TXT:0, HTML:1, BMP:2, WAV:3 };
 const FMT_NAME = ['txt','html','bmp','wav'];
 
 // ════════════════════════════════════════════════════════════════════
-// SEMANTIC VOCABULARY (256 common descriptive words)
+// SEMANTIC VOCABULARY
 // ════════════════════════════════════════════════════════════════════
 const VOCAB_WORDS = [
   'upbeat','dark','moody','bright','intense','gentle','calm','aggressive','playful','mysterious',
@@ -636,13 +532,14 @@ const VOCAB_WORDS = [
   'pixel','byte','bit','hex','binary','ascii','unicode','utf','stream','buffer',
   'recursive','iterative','functional','imperative','reactive','declarative','async','sync','parallel','serial',
   'network','local','remote','cached','live','snapshot','delta','diff','patch','merge',
-  'linear','circular','spiral','fractal','random','periodic','aperiodic','stochastic','deterministic','chaotic',
+  'linear','circular','spiral','fractal','periodic','aperiodic','stochastic','deterministic','chaotic','complex',
   'heavy','light','dense','airy','deep','shallow','wide','narrow','tall','short',
   'electric','acoustic','magnetic','optical','thermal','mechanical','chemical','quantum','classical','digital',
-  'pulsing','fading','rising','falling','shifting','blending',
+  // v0.2 additions — spike/patch relevant
+  'spotted','striped','patterned','textured','gradient','marbled','blotched','banded','mottled','halftone',
+  'pitched','tonal','transient','sustained','attack','decay','resonant','harmonic','overtone','fundamental',
+  'pulsing','fading','rising','falling','shifting','blending','flickering','stuttering','swelling','decaying',
 ];
-
-// Derive VOCAB size from actual word list — stays in sync automatically
 CFG.VOCAB = VOCAB_WORDS.length;
 
 function tagToIds(tagStr) {
@@ -653,7 +550,6 @@ function tagToIds(tagStr) {
     const idx = VOCAB_WORDS.indexOf(t);
     if (idx >= 0) ids.push(idx);
     else {
-      // Hash unknown words into range
       let h = 0;
       for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) & 0x7FFFFFFF;
       ids.push(h % CFG.VOCAB);
@@ -668,37 +564,226 @@ function tagToIds(tagStr) {
 function randn() {
   return Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
 }
-
-function yieldToMain() {
-  return new Promise(r => setTimeout(r, 0));
+function yieldToMain() { return new Promise(r => setTimeout(r, 0)); }
+function fmtSize(b) {
+  if (b < 1024) return b + 'B';
+  if (b < 1048576) return (b/1024).toFixed(1) + 'KB';
+  return (b/1048576).toFixed(2) + 'MB';
 }
-
-function fmtSize(bytes) {
-  if (bytes < 1024) return bytes + 'B';
-  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + 'KB';
-  return (bytes/1024/1024).toFixed(2) + 'MB';
-}
-
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+// ════════════════════════════════════════════════════════════════════
+// SPIKEVOX — LIF Audio Encoder
+// Ported from FPSS — ConsciousNode SoftWorks (Kehai Interim, Phase 2)
+// Biological LIF model for raw waveform processing.
+// ════════════════════════════════════════════════════════════════════
+class SpikeVox {
+  constructor(threshold=3.5, leakRate=0.95, refractoryPeriod=2) {
+    this.threshold = threshold;
+    this.leakRate = leakRate;
+    this.refractoryPeriod = refractoryPeriod;
+    this.membrane = null; this.refractory = null; this.dim = 0;
+    this.totalSpikes = 0; this.totalSteps = 0; this.firingRate = 0;
+  }
+
+  _ensureState(dim) {
+    if (this.dim === dim) return;
+    this.dim = dim;
+    this.membrane = new Float32Array(dim);
+    this.refractory = new Int32Array(dim);
+  }
+
+  /* LIF step: V[i] = leak*V[i] + input[i]; fire if V[i] >= threshold */
+  step(rawFeatures) {
+    this._ensureState(rawFeatures.length);
+    const spikes = new Int8Array(this.dim);
+    let spikeCount = 0;
+    for (let i = 0; i < this.dim; i++) {
+      if (this.refractory[i] > 0) {
+        this.refractory[i]--;
+        this.membrane[i] = 0;
+        continue;
+      }
+      this.membrane[i] = this.leakRate * this.membrane[i] + rawFeatures[i];
+      if (this.membrane[i] >= this.threshold) {
+        spikes[i] = 1;
+        this.membrane[i] = 0;
+        this.refractory[i] = this.refractoryPeriod;
+        spikeCount++;
+      }
+    }
+    this.totalSpikes += spikeCount;
+    this.totalSteps++;
+    this.firingRate = 0.95 * this.firingRate + 0.05 * (spikeCount / this.dim);
+    return { spikes, spikeCount };
+  }
+
+  /* Per-neuron band energy + ZCR + RMS — spectrogram-free */
+  extractFeatures(pcmBuffer) {
+    const dim = this.dim || CFG.CHUNK;
+    this._ensureState(dim);
+    const features = new Float32Array(dim);
+    const step = Math.max(1, Math.floor(pcmBuffer.length / (dim - 2)));
+    for (let i = 0; i < dim - 2; i++) {
+      const base = i * step;
+      let s = 0;
+      for (let j = 0; j < step && base + j < pcmBuffer.length; j++)
+        s += Math.abs(pcmBuffer[base + j]);
+      features[i] = s / Math.max(1, step);
+    }
+    // ZCR
+    let zcr = 0;
+    for (let i = 1; i < pcmBuffer.length; i++)
+      if ((pcmBuffer[i] >= 0) !== (pcmBuffer[i-1] >= 0)) zcr++;
+    features[dim-2] = zcr / Math.max(1, pcmBuffer.length);
+    // RMS
+    let energy = 0;
+    for (let i = 0; i < pcmBuffer.length; i++) energy += pcmBuffer[i] ** 2;
+    features[dim-1] = Math.sqrt(energy / Math.max(1, pcmBuffer.length));
+    return features;
+  }
+
+  /* Rate coding: EMA accumulator → dense feature vector in [0,1] */
+  spikesToFeatures(spikes, acc) {
+    for (let i = 0; i < this.dim; i++) acc[i] = 0.9 * acc[i] + spikes[i];
+    let maxVal = 0;
+    for (let i = 0; i < this.dim; i++) if (acc[i] > maxVal) maxVal = acc[i];
+    const features = new Float32Array(this.dim);
+    if (maxVal > 0) for (let i = 0; i < this.dim; i++) features[i] = acc[i] / maxVal;
+    return features;
+  }
+
+  reset() {
+    if (this.membrane) this.membrane.fill(0);
+    if (this.refractory) this.refractory.fill(0);
+    this.totalSpikes = 0; this.totalSteps = 0; this.firingRate = 0;
+  }
+}
+
+/* SpikeVox decode: spike feature vector [0,1] → approximate PCM via log-spaced sine bank */
+function spikeFeatsToPCM(feats, nSamples, sampleRate=22050) {
+  const pcm = new Float32Array(nSamples);
+  const nBands = feats.length;
+  // Log-spaced frequencies from 20Hz to Nyquist
+  for (let b = 0; b < nBands; b++) {
+    const amp = feats[b];
+    if (amp < 0.01) continue;
+    const freq = 20 * Math.pow((sampleRate / 2) / 20, b / nBands);
+    const phaseInc = 2 * Math.PI * freq / sampleRate;
+    let phase = Math.random() * 2 * Math.PI;
+    for (let i = 0; i < nSamples; i++) {
+      pcm[i] += amp * Math.sin(phase);
+      phase += phaseInc;
+    }
+  }
+  // Normalize to [-1, 1]
+  let maxAmp = 0;
+  for (let i = 0; i < nSamples; i++) maxAmp = Math.max(maxAmp, Math.abs(pcm[i]));
+  if (maxAmp > 0.001) for (let i = 0; i < nSamples; i++) pcm[i] /= maxAmp;
+  return pcm;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ELASTICTOK — Spatial BMP Patch Encoding
+// Ported from FPSS — ConsciousNode SoftWorks (Kehai Interim, Phase 3)
+// 8×8px spatial patches with position conditioning.
+// ════════════════════════════════════════════════════════════════════
+/*
+  BMP encoding notes:
+  - BMP stores pixels bottom-up (row 0 is the BOTTOM of the image)
+  - BMP stores colors as BGR, not RGB
+  - BMP rows are padded to 4-byte boundaries
+  Each patch chunk layout (256 floats):
+  - [0..191]:   R,G,B floats for 64 pixels (normalized to [-1,1])
+  - [192]:      patch_row / (gridH-1)  ∈ [0,1]  — position conditioning
+  - [193]:      patch_col / (gridW-1)  ∈ [0,1]
+  - [194..255]: zeros (padding to CHUNK=256)
+*/
+function elasticTokEncode(pixelsBGR, width, height, rowStride, patchSize=8) {
+  // pixelsBGR: raw BMP pixel bytes (bottom-up, BGR, with row padding)
+  // rowStride: bytes per row including padding
+  const gridW = Math.floor(width / patchSize);
+  const gridH = Math.floor(height / patchSize);
+  const result = []; // array of {chunk: Float32[256], patchR: int, patchC: int}
+
+  for (let pr = 0; pr < gridH; pr++) {
+    for (let pc = 0; pc < gridW; pc++) {
+      const chunk = new Float32Array(CFG.CHUNK); // zeros by default
+      let idx = 0;
+
+      for (let py = 0; py < patchSize; py++) {
+        // BMP is bottom-up: patch row pr, pixel row py
+        // In the BMP buffer, row 0 is the BOTTOM of the image
+        // So visual row (pr*patchSize + py) from top → bmp row (height-1 - (pr*patchSize + py))
+        const bmpRow = (height - 1) - (pr * patchSize + py);
+        const rowBase = bmpRow * rowStride;
+
+        for (let px = 0; px < patchSize; px++) {
+          const byteIdx = rowBase + (pc * patchSize + px) * 3;
+          const B = pixelsBGR[byteIdx];
+          const G = pixelsBGR[byteIdx + 1];
+          const R = pixelsBGR[byteIdx + 2];
+          chunk[idx++] = R / 127.5 - 1.0;
+          chunk[idx++] = G / 127.5 - 1.0;
+          chunk[idx++] = B / 127.5 - 1.0;
+        }
+      }
+
+      // Position conditioning at slots 192, 193
+      chunk[192] = gridH > 1 ? pr / (gridH - 1) : 0;
+      chunk[193] = gridW > 1 ? pc / (gridW - 1) : 0;
+      // slots 194..255 remain zero
+
+      result.push({ chunk, patchR: pr, patchC: pc });
+    }
+  }
+  return { patches: result, gridW, gridH };
+}
+
+function elasticTokDecode(patches, width, height, rowStride, patchSize=8) {
+  // Returns Uint8Array of raw BMP pixel data (bottom-up, BGR, with row padding)
+  const pixBuf = new Uint8Array(rowStride * height);
+  const gridW = Math.floor(width / patchSize);
+  const gridH = Math.floor(height / patchSize);
+
+  let pi = 0;
+  for (let pr = 0; pr < gridH; pr++) {
+    for (let pc = 0; pc < gridW; pc++) {
+      if (pi >= patches.length) break;
+      const chunk = patches[pi++];
+      let idx = 0;
+
+      for (let py = 0; py < patchSize; py++) {
+        const bmpRow = (height - 1) - (pr * patchSize + py);
+        const rowBase = bmpRow * rowStride;
+
+        for (let px = 0; px < patchSize; px++) {
+          const byteIdx = rowBase + (pc * patchSize + px) * 3;
+          const R = clamp(Math.round((chunk[idx++] + 1) * 127.5), 0, 255);
+          const G = clamp(Math.round((chunk[idx++] + 1) * 127.5), 0, 255);
+          const B = clamp(Math.round((chunk[idx++] + 1) * 127.5), 0, 255);
+          pixBuf[byteIdx]     = B; // BGR
+          pixBuf[byteIdx + 1] = G;
+          pixBuf[byteIdx + 2] = R;
+        }
+      }
+    }
+  }
+  return pixBuf;
 }
 
 // ════════════════════════════════════════════════════════════════════
 // ML PRIMITIVES
 // ════════════════════════════════════════════════════════════════════
-
 class Linear {
   constructor(inDim, outDim) {
-    this.inDim  = inDim;
-    this.outDim = outDim;
+    this.inDim = inDim; this.outDim = outDim;
     this.weight = new Float32Array(outDim * inDim);
     this.bias   = new Float32Array(outDim);
     this.gradW  = new Float32Array(outDim * inDim);
     this.gradB  = new Float32Array(outDim);
     this._lastIn = null;
-
     const scale = Math.sqrt(2 / (inDim + outDim));
     for (let i = 0; i < this.weight.length; i++)
       this.weight[i] = (Math.random() * 2 - 1) * scale;
@@ -717,11 +802,11 @@ class Linear {
   }
 
   backward(gradOut) {
-    const x    = this._lastIn;
+    const x = this._lastIn;
     const gradIn = new Float32Array(this.inDim);
     for (let o = 0; o < this.outDim; o++) {
       const row = o * this.inDim;
-      const g   = gradOut[o];
+      const g = gradOut[o];
       this.gradB[o] += g;
       for (let i = 0; i < this.inDim; i++) {
         this.gradW[row + i] += g * x[i];
@@ -734,35 +819,29 @@ class Linear {
   zeroGrad() { this.gradW.fill(0); this.gradB.fill(0); }
 
   params() {
-    return [
-      { w: this.weight, g: this.gradW },
-      { w: this.bias,   g: this.gradB },
-    ];
+    return [{ w: this.weight, g: this.gradW }, { w: this.bias, g: this.gradB }];
   }
 }
 
 class LayerNorm {
   constructor(dim) {
-    this.dim    = dim;
+    this.dim = dim;
     this.weight = new Float32Array(dim).fill(1);
     this.bias   = new Float32Array(dim).fill(0);
     this.gradW  = new Float32Array(dim);
     this.gradB  = new Float32Array(dim);
-    this._xn    = null;
-    this._std   = 1;
+    this._xn = null; this._std = 1;
   }
 
   forward(x) {
     let mean = 0;
     for (let i = 0; i < this.dim; i++) mean += x[i];
     mean /= this.dim;
-
     let variance = 0;
     for (let i = 0; i < this.dim; i++) variance += (x[i] - mean) ** 2;
     variance /= this.dim;
-
     this._std = Math.sqrt(variance + 1e-5);
-    const xn  = new Float32Array(this.dim);
+    const xn = new Float32Array(this.dim);
     const out = new Float32Array(this.dim);
     for (let i = 0; i < this.dim; i++) {
       xn[i]  = (x[i] - mean) / this._std;
@@ -773,34 +852,26 @@ class LayerNorm {
   }
 
   backward(gradOut) {
-    const N   = this.dim;
-    const std = this._std;
-    const xn  = this._xn;
+    const N = this.dim, std = this._std, xn = this._xn;
     const gxn = new Float32Array(N);
     let sumGxn = 0, sumGxnXn = 0;
-
     for (let i = 0; i < N; i++) {
       this.gradW[i] += gradOut[i] * xn[i];
       this.gradB[i] += gradOut[i];
-      gxn[i]         = gradOut[i] * this.weight[i];
-      sumGxn        += gxn[i];
-      sumGxnXn      += gxn[i] * xn[i];
+      gxn[i]     = gradOut[i] * this.weight[i];
+      sumGxn    += gxn[i];
+      sumGxnXn  += gxn[i] * xn[i];
     }
-
     const gradIn = new Float32Array(N);
     for (let i = 0; i < N; i++)
-      gradIn[i] = (gxn[i] - sumGxn / N - xn[i] * sumGxnXn / N) / std;
-
+      gradIn[i] = (gxn[i] - sumGxn/N - xn[i]*sumGxnXn/N) / std;
     return gradIn;
   }
 
   zeroGrad() { this.gradW.fill(0); this.gradB.fill(0); }
 
   params() {
-    return [
-      { w: this.weight, g: this.gradW },
-      { w: this.bias,   g: this.gradB },
-    ];
+    return [{ w: this.weight, g: this.gradW }, { w: this.bias, g: this.gradB }];
   }
 }
 
@@ -820,13 +891,11 @@ function siluGrad(preAct, gradOut) {
 }
 
 class Adam {
-  constructor(paramGroups, lr = CFG.LR) {
-    this.groups = paramGroups;
-    this.lr = lr;
-    this.b1 = 0.9; this.b2 = 0.999; this.eps = 1e-8;
-    this.t  = 0;
-    this.m  = paramGroups.map(p => new Float32Array(p.w.length));
-    this.v  = paramGroups.map(p => new Float32Array(p.w.length));
+  constructor(paramGroups, lr=CFG.LR) {
+    this.groups = paramGroups; this.lr = lr;
+    this.b1 = 0.9; this.b2 = 0.999; this.eps = 1e-8; this.t = 0;
+    this.m = paramGroups.map(p => new Float32Array(p.w.length));
+    this.v = paramGroups.map(p => new Float32Array(p.w.length));
   }
 
   step() {
@@ -846,52 +915,57 @@ class Adam {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// SCORENET
+// SCORENET v0.2
+// 4-layer, 768-dim hidden, dual AdaLN conditioning
+// cDim = 50 (fmt16 + sem32 + patch_r + patch_c)
 // ════════════════════════════════════════════════════════════════════
 class ScoreNet {
   constructor() {
-    const C = CFG.CHUNK, H = CFG.HID;
-    const F = CFG.FMT_DIM, S = CFG.SEM_DIM, T = CFG.T_DIM;
-    const inDim  = C + T + F + S;    // 368
-    const cDim   = F + S;            // 48
+    const IN  = CFG.IN_DIM;   // 368
+    const H1  = CFG.HID1;     // 768
+    const H2  = CFG.HID2;     // 512
+    const C   = CFG.C_DIM;    // 50
+    const F   = CFG.FMT_DIM;  // 16
+    const S   = CFG.SEM_DIM;  // 32
 
-    this.inDim = inDim; this.cDim = cDim;
-
-    // Learnable embeddings
-    this.fmtEmb  = new Float32Array(CFG.N_FORMATS * F);
-    this.semEmb  = new Float32Array(CFG.VOCAB * S);
-    this.gFmt    = new Float32Array(CFG.N_FORMATS * F);
-    this.gSem    = new Float32Array(CFG.VOCAB * S);
-
+    // Embeddings
+    this.fmtEmb = new Float32Array(CFG.N_FORMATS * F);
+    this.semEmb = new Float32Array(CFG.VOCAB * S);
+    this.gFmt   = new Float32Array(CFG.N_FORMATS * F);
+    this.gSem   = new Float32Array(CFG.VOCAB * S);
     const es = 0.02;
     for (let i = 0; i < this.fmtEmb.length; i++) this.fmtEmb[i] = (Math.random()*2-1)*es;
     for (let i = 0; i < this.semEmb.length;  i++) this.semEmb[i] = (Math.random()*2-1)*es;
 
-    // AdaLN projections (cDim → H)
-    this.adaShift = new Linear(cDim, H);
-    this.adaScale = new Linear(cDim, H);
+    // AdaLN 1 (cond → H1)
+    this.adaShift1 = new Linear(C, H1);
+    this.adaScale1 = new Linear(C, H1);
 
-    // Layers
-    this.ln1 = new LayerNorm(inDim);
-    this.l1  = new Linear(inDim, H);
-    this.ln2 = new LayerNorm(H);
-    this.l2  = new Linear(H, H);
-    this.ln3 = new LayerNorm(H);
-    this.l3  = new Linear(H, C);
+    // AdaLN 2 (cond → H2)
+    this.adaShift2 = new Linear(C, H2);
+    this.adaScale2 = new Linear(C, H2);
+
+    // 4 layers
+    this.ln1 = new LayerNorm(IN);
+    this.l1  = new Linear(IN, H1);
+    this.ln2 = new LayerNorm(H1);
+    this.l2  = new Linear(H1, H1);
+    this.ln3 = new LayerNorm(H1);
+    this.l3  = new Linear(H1, H2);
+    this.ln4 = new LayerNorm(H2);
+    this.l4  = new Linear(H2, CFG.CHUNK);
 
     this._cache = {};
-
-    // Build Adam over all params
     this._buildOptimizer();
-
-    console.log('[ScoreNet] params:', this.paramCount());
+    console.log('[ScoreNet v0.2] params:', this.paramCount());
   }
 
   _buildOptimizer() {
     const groups = [
-      ...this.adaShift.params(), ...this.adaScale.params(),
-      ...this.l1.params(), ...this.l2.params(), ...this.l3.params(),
-      ...this.ln1.params(), ...this.ln2.params(), ...this.ln3.params(),
+      ...this.adaShift1.params(), ...this.adaScale1.params(),
+      ...this.adaShift2.params(), ...this.adaScale2.params(),
+      ...this.l1.params(), ...this.l2.params(), ...this.l3.params(), ...this.l4.params(),
+      ...this.ln1.params(), ...this.ln2.params(), ...this.ln3.params(), ...this.ln4.params(),
       { w: this.fmtEmb, g: this.gFmt },
       { w: this.semEmb, g: this.gSem },
     ];
@@ -900,10 +974,10 @@ class ScoreNet {
 
   paramCount() {
     let n = 0;
-    for (const p of [
-      this.adaShift, this.adaScale, this.l1, this.l2, this.l3
-    ]) n += p.weight.length + p.bias.length;
-    for (const l of [this.ln1, this.ln2, this.ln3])
+    for (const l of [this.adaShift1, this.adaScale1, this.adaShift2, this.adaScale2,
+                     this.l1, this.l2, this.l3, this.l4])
+      n += l.weight.length + l.bias.length;
+    for (const l of [this.ln1, this.ln2, this.ln3, this.ln4])
       n += l.weight.length + l.bias.length;
     n += this.fmtEmb.length + this.semEmb.length;
     return n;
@@ -911,10 +985,10 @@ class ScoreNet {
 
   _tEmb(t) {
     const dim = CFG.T_DIM, emb = new Float32Array(dim);
-    for (let i = 0; i < dim / 2; i++) {
-      const freq = Math.exp(-Math.log(10000) * 2 * i / dim);
-      emb[i]          = Math.sin(t * freq);
-      emb[i + dim/2]  = Math.cos(t * freq);
+    for (let i = 0; i < dim/2; i++) {
+      const freq = Math.exp(-Math.log(10000) * 2*i / dim);
+      emb[i]         = Math.sin(t * freq);
+      emb[i + dim/2] = Math.cos(t * freq);
     }
     return emb;
   }
@@ -935,156 +1009,171 @@ class ScoreNet {
     return out;
   }
 
-  forward(xt, t, fid, tagIds) {
-    const C = CFG.CHUNK, F = CFG.FMT_DIM, S = CFG.SEM_DIM, T = CFG.T_DIM;
+  forward(xt, t, fid, tagIds, patchR=0, patchC=0) {
+    const F = CFG.FMT_DIM, S = CFG.SEM_DIM, T = CFG.T_DIM;
+    const C = CFG.C_DIM;   // 50
+    const H1 = CFG.HID1, H2 = CFG.HID2;
 
-    const tE  = this._tEmb(t);
-    const fE  = this._fmtVec(fid);
-    const sE  = this._semVec(tagIds);
+    const tE = this._tEmb(t);
+    const fE = this._fmtVec(fid);
+    const sE = this._semVec(tagIds);
 
-    // Conditioning vector
-    const cond = new Float32Array(this.cDim);
+    // Conditioning vector [fmt16, sem32, patchR, patchC]
+    const cond = new Float32Array(C);
     cond.set(fE, 0); cond.set(sE, F);
+    cond[F + S]     = patchR;
+    cond[F + S + 1] = patchC;
 
-    // Input assembly
-    const inp = new Float32Array(this.inDim);
-    inp.set(xt, 0); inp.set(tE, C); inp.set(fE, C+T); inp.set(sE, C+T+F);
+    // Input assembly: chunk[256] | t_emb[64] | fmt_emb[16] | sem_emb[32]
+    const inp = new Float32Array(CFG.IN_DIM);
+    inp.set(xt, 0); inp.set(tE, CFG.CHUNK); inp.set(fE, CFG.CHUNK+T); inp.set(sE, CFG.CHUNK+T+F);
 
-    // Layer 1
-    const x1ln  = this.ln1.forward(inp);
-    const x1    = this.l1.forward(x1ln);
+    // Forward pass
+    const x1   = this.l1.forward(this.ln1.forward(inp));       // 368→768
+    const shift1 = this.adaShift1.forward(cond);
+    const scale1 = this.adaScale1.forward(cond);
+    const x1c  = new Float32Array(H1);
+    for (let i = 0; i < H1; i++) x1c[i] = x1[i] * (1 + scale1[i]) + shift1[i];
+    const x1a  = silu(x1c);                                    // AdaLN1 + SiLU
 
-    // AdaLN
-    const shift = this.adaShift.forward(cond);
-    const scale = this.adaScale.forward(cond);
-    const x1c   = new Float32Array(CFG.HID);
-    for (let i = 0; i < CFG.HID; i++) x1c[i] = x1[i] * (1 + scale[i]) + shift[i];
-    const x1a = silu(x1c);
+    const x2   = this.l2.forward(this.ln2.forward(x1a));       // 768→768
+    const x2a  = silu(x2);                                     // SiLU
 
-    // Layer 2
-    const x2ln = this.ln2.forward(x1a);
-    const x2   = this.l2.forward(x2ln);
-    const x2a  = silu(x2);
+    const x3   = this.l3.forward(this.ln3.forward(x2a));       // 768→512
+    const shift2 = this.adaShift2.forward(cond);
+    const scale2 = this.adaScale2.forward(cond);
+    const x3c  = new Float32Array(H2);
+    for (let i = 0; i < H2; i++) x3c[i] = x3[i] * (1 + scale2[i]) + shift2[i];
+    const x3a  = silu(x3c);                                    // AdaLN2 + SiLU
 
-    // Layer 3 (output)
-    const x3ln = this.ln3.forward(x2a);
-    const out  = this.l3.forward(x3ln);
+    const out  = this.l4.forward(this.ln4.forward(x3a));       // 512→256
 
-    this._cache = { inp, x1ln, x1, cond, shift, scale, x1c, x1a, x2ln, x2, x2a, x3ln, t, fid, tagIds, xt, fE, sE };
+    this._cache = { inp, x1, cond, shift1, scale1, x1c, x1a,
+                    x2, x2a, x3, shift2, scale2, x3c, x3a, fid, tagIds, patchR, patchC };
     return out;
   }
 
   backward(gradOut) {
     const c = this._cache;
-    const F = CFG.FMT_DIM, S = CFG.SEM_DIM;
-    const H = CFG.HID;
+    const F = CFG.FMT_DIM, S = CFG.SEM_DIM, H1 = CFG.HID1, H2 = CFG.HID2, C = CFG.C_DIM;
 
-    // L3 ← LN3
-    const gX3ln = this.l3.backward(gradOut);
-    const gX2a  = this.ln3.backward(gX3ln);
+    // L4 ← LN4
+    const gX3a   = this.ln4.backward(this.l4.backward(gradOut));
 
-    // SiLU backward (layer 2)
-    const gX2   = siluGrad(c.x2, gX2a);
-    const gX2ln = this.l2.backward(gX2);
-    const gX1a  = this.ln2.backward(gX2ln);
-
-    // SiLU backward (AdaLN output)
-    const gX1c  = siluGrad(c.x1c, gX1a);
-
-    // AdaLN backward
-    const gX1   = new Float32Array(H);
-    const gShift = new Float32Array(H);
-    const gScale = new Float32Array(H);
-    for (let i = 0; i < H; i++) {
-      gX1[i]    = gX1c[i] * (1 + c.scale[i]);
-      gShift[i] = gX1c[i];
-      gScale[i] = gX1c[i] * c.x1[i];
+    // SiLU ← AdaLN2 ← L3 ← LN3
+    const gX3c   = siluGrad(c.x3c, gX3a);
+    const gX3    = new Float32Array(H2);
+    const gShift2 = new Float32Array(H2);
+    const gScale2 = new Float32Array(H2);
+    for (let i = 0; i < H2; i++) {
+      gX3[i]    = gX3c[i] * (1 + c.scale2[i]);
+      gShift2[i] = gX3c[i];
+      gScale2[i] = gX3c[i] * c.x3[i];
     }
-    const gCond1 = this.adaShift.backward(gShift);
-    const gCond2 = this.adaScale.backward(gScale);
+    const gCond2a = this.adaShift2.backward(gShift2);
+    const gCond2b = this.adaScale2.backward(gScale2);
+    const gX2a   = this.ln3.backward(this.l3.backward(gX3));
 
-    // L1 ← LN1
-    const gX1ln = this.l1.backward(gX1);
-    this.ln1.backward(gX1ln);
+    // SiLU ← L2 ← LN2
+    const gX2    = this.l2.backward(this.ln2.backward(siluGrad(c.x2, gX2a)));
 
-    // Embedding gradients (from cond vector)
-    // cond = [fE, sE], so grad splits at F
-    for (let i = 0; i < this.cDim; i++) {
-      const g = gCond1[i] + gCond2[i];
-      if (i < F) {
-        // fmt embedding grad
-        this.gFmt[c.fid * F + i] += g;
-      } else {
-        // sem embedding grad (mean-pooled, so divide by n tags)
-        const nTags = c.tagIds.length || 1;
-        for (const id of c.tagIds) {
-          this.gSem[clamp(id, 0, CFG.VOCAB-1) * S + (i - F)] += g / nTags;
-        }
-      }
+    // SiLU ← AdaLN1 ← L1 ← LN1
+    const gX1c   = siluGrad(c.x1c, gX2);
+    const gX1    = new Float32Array(H1);
+    const gShift1 = new Float32Array(H1);
+    const gScale1 = new Float32Array(H1);
+    for (let i = 0; i < H1; i++) {
+      gX1[i]    = gX1c[i] * (1 + c.scale1[i]);
+      gShift1[i] = gX1c[i];
+      gScale1[i] = gX1c[i] * c.x1[i];
     }
+    const gCond1a = this.adaShift1.backward(gShift1);
+    const gCond1b = this.adaScale1.backward(gScale1);
+    this.ln1.backward(this.l1.backward(gX1));
+
+    // Accumulate cond gradients, split to fmt + sem embeddings
+    const gCond = new Float32Array(C);
+    for (let i = 0; i < C; i++)
+      gCond[i] = gCond1a[i] + gCond1b[i] + gCond2a[i] + gCond2b[i];
+
+    // fmt embedding gradient
+    for (let i = 0; i < F; i++)
+      this.gFmt[c.fid * F + i] += gCond[i];
+
+    // sem embedding gradient (mean-pooled)
+    const nTags = c.tagIds.length || 1;
+    for (const id of c.tagIds) {
+      const off = clamp(id, 0, CFG.VOCAB-1) * S;
+      for (let i = 0; i < S; i++)
+        this.gSem[off + i] += gCond[F + i] / nTags;
+    }
+    // gCond[F+S] and gCond[F+S+1] are patchR/patchC grads — not stored (not learnable params)
   }
 
   zeroGrad() {
-    for (const l of [this.adaShift, this.adaScale, this.l1, this.l2, this.l3])
-      l.zeroGrad();
-    for (const l of [this.ln1, this.ln2, this.ln3])
-      l.zeroGrad();
-    this.gFmt.fill(0);
-    this.gSem.fill(0);
+    for (const l of [this.adaShift1, this.adaScale1, this.adaShift2, this.adaScale2,
+                     this.l1, this.l2, this.l3, this.l4]) l.zeroGrad();
+    for (const l of [this.ln1, this.ln2, this.ln3, this.ln4]) l.zeroGrad();
+    this.gFmt.fill(0); this.gSem.fill(0);
   }
 
   step() { this.opt.step(); }
 
   serialize() {
-    const enc = (arr) => {
-      let s = '';
-      const bytes = new Uint8Array(arr.buffer);
-      for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-      return btoa(s);
-    };
+    const enc = arr => btoa(Array.from(new Uint8Array(arr.buffer), b => String.fromCharCode(b)).join(''));
     return {
-      version: '0.1',
-      steps:   TRAIN.steps,
-      config:  { T: CFG.T, CHUNK: CFG.CHUNK, HID: CFG.HID, VOCAB: CFG.VOCAB },
+      version: '0.2', steps: TRAIN.steps,
+      config: { T: CFG.T, CHUNK: CFG.CHUNK, HID1: CFG.HID1, HID2: CFG.HID2, VOCAB: CFG.VOCAB, C_DIM: CFG.C_DIM },
       weights: {
-        fmtEmb:    enc(this.fmtEmb),
-        semEmb:    enc(this.semEmb),
-        adaShiftW: enc(this.adaShift.weight), adaShiftB: enc(this.adaShift.bias),
-        adaScaleW: enc(this.adaScale.weight), adaScaleB: enc(this.adaScale.bias),
+        fmtEmb: enc(this.fmtEmb), semEmb: enc(this.semEmb),
+        adaShift1W: enc(this.adaShift1.weight), adaShift1B: enc(this.adaShift1.bias),
+        adaScale1W: enc(this.adaScale1.weight), adaScale1B: enc(this.adaScale1.bias),
+        adaShift2W: enc(this.adaShift2.weight), adaShift2B: enc(this.adaShift2.bias),
+        adaScale2W: enc(this.adaScale2.weight), adaScale2B: enc(this.adaScale2.bias),
         l1W: enc(this.l1.weight), l1B: enc(this.l1.bias),
         l2W: enc(this.l2.weight), l2B: enc(this.l2.bias),
         l3W: enc(this.l3.weight), l3B: enc(this.l3.bias),
+        l4W: enc(this.l4.weight), l4B: enc(this.l4.bias),
         ln1W: enc(this.ln1.weight), ln1B: enc(this.ln1.bias),
         ln2W: enc(this.ln2.weight), ln2B: enc(this.ln2.bias),
         ln3W: enc(this.ln3.weight), ln3B: enc(this.ln3.bias),
+        ln4W: enc(this.ln4.weight), ln4B: enc(this.ln4.bias),
       }
     };
   }
 
   load(data) {
+    if (data.version !== '0.2') {
+      alert('⚠ This .fabula was saved by v' + (data.version||'?') + '. v0.2 weights are not backward compatible. Starting fresh.');
+      return false;
+    }
     const dec = (s, arr) => {
       const bin = atob(s);
       const bytes = new Uint8Array(arr.buffer);
       for (let i = 0; i < bytes.length; i++) bytes[i] = bin.charCodeAt(i);
     };
     const w = data.weights;
-    dec(w.fmtEmb, this.fmtEmb);
-    dec(w.semEmb, this.semEmb);
-    dec(w.adaShiftW, this.adaShift.weight); dec(w.adaShiftB, this.adaShift.bias);
-    dec(w.adaScaleW, this.adaScale.weight); dec(w.adaScaleB, this.adaScale.bias);
+    dec(w.fmtEmb, this.fmtEmb); dec(w.semEmb, this.semEmb);
+    dec(w.adaShift1W, this.adaShift1.weight); dec(w.adaShift1B, this.adaShift1.bias);
+    dec(w.adaScale1W, this.adaScale1.weight); dec(w.adaScale1B, this.adaScale1.bias);
+    dec(w.adaShift2W, this.adaShift2.weight); dec(w.adaShift2B, this.adaShift2.bias);
+    dec(w.adaScale2W, this.adaScale2.weight); dec(w.adaScale2B, this.adaScale2.bias);
     dec(w.l1W, this.l1.weight); dec(w.l1B, this.l1.bias);
     dec(w.l2W, this.l2.weight); dec(w.l2B, this.l2.bias);
     dec(w.l3W, this.l3.weight); dec(w.l3B, this.l3.bias);
+    dec(w.l4W, this.l4.weight); dec(w.l4B, this.l4.bias);
     dec(w.ln1W, this.ln1.weight); dec(w.ln1B, this.ln1.bias);
     dec(w.ln2W, this.ln2.weight); dec(w.ln2B, this.ln2.bias);
     dec(w.ln3W, this.ln3.weight); dec(w.ln3B, this.ln3.bias);
+    dec(w.ln4W, this.ln4.weight); dec(w.ln4B, this.ln4.bias);
     this._buildOptimizer();
     if (data.steps) TRAIN.steps = data.steps;
+    return true;
   }
 }
 
 // ════════════════════════════════════════════════════════════════════
-// DIFFUSION MATH
+// DIFFUSION MATH (DDPM — Ho et al. 2020)
 // ════════════════════════════════════════════════════════════════════
 const DIFF = (() => {
   const betas    = new Float32Array(CFG.T + 1);
@@ -1114,26 +1203,20 @@ const DIFF = (() => {
       return { xt, noise };
     },
 
-    // DDPM reverse step — Algorithm 2 (Ho et al. 2020)
+    // DDPM Algorithm 2 — direct ε-prediction form
     reverseStep(xt, epsPred, t) {
       const beta   = betas[t];
       const alpha  = alphas[t];
       const ab     = alphaBar[t];
       const abPrev = alphaBar[t-1] || 1;
-
-      // Posterior variance (DDPM Eq. 7)
-      const sigma = t > 1 ? Math.sqrt(beta * (1 - abPrev) / (1 - ab)) : 0;
-
-      // Precompute scalars outside the sample loop
-      const invSqrtAlpha      = 1 / Math.sqrt(alpha);
-      const sqrtOneMinusAb    = Math.sqrt(1 - ab);
-      const betaOverSqrt1mAb  = beta / sqrtOneMinusAb;
+      const sigma  = t > 1 ? Math.sqrt(beta * (1 - abPrev) / (1 - ab)) : 0;
+      const invSqrtAlpha     = 1 / Math.sqrt(alpha);
+      const betaOverSqrt1mAb = beta / Math.sqrt(1 - ab);
 
       const xPrev = new Float32Array(xt.length);
       for (let i = 0; i < xt.length; i++) {
-        // Algorithm 2: mean = (1/sqrt(α_t)) * (x_t - β_t/sqrt(1-ᾱ_t) * ε_pred)
         const mean = invSqrtAlpha * (xt[i] - betaOverSqrt1mAb * epsPred[i]);
-        xPrev[i]   = mean + (t > 1 ? sigma * randn() : 0);
+        xPrev[i] = mean + (t > 1 ? sigma * randn() : 0);
       }
       return xPrev;
     }
@@ -1151,66 +1234,85 @@ function detectFormat(file) {
   return FORMAT.TXT;
 }
 
+function autoTagFromFilename(name) {
+  const stem   = name.replace(/\.[^.]+$/, '').toLowerCase();
+  const tokens = stem.split(/[\s_\-\.]+/);
+  return [...new Set(tokens.filter(t => VOCAB_WORDS.includes(t)))].join(' ');
+}
+
 async function parseFile(file, fid) {
   const buf   = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
 
-  // Integrity check
   if (fid === FORMAT.BMP && (bytes[0] !== 0x42 || bytes[1] !== 0x4D))
-    return { ok: false, reason: 'Invalid BMP header' };
+    return { ok: false, reason: 'Invalid BMP header (expected 0x42 0x4D)' };
   if (fid === FORMAT.WAV && (bytes[0] !== 0x52 || bytes[1] !== 0x49))
     return { ok: false, reason: 'Invalid WAV/RIFF header' };
 
-  let floats, meta = {};
+  let chunks = [], meta = {};
 
   if (fid === FORMAT.BMP) {
-    const view = new DataView(buf);
-    const w    = view.getInt32(18, true);
-    const h    = view.getInt32(22, true);
-    const off  = view.getUint32(10, true);
-    const pix  = bytes.slice(off);
-    floats = new Float32Array(pix.length);
-    for (let i = 0; i < pix.length; i++) floats[i] = pix[i] / 127.5 - 1;
-    meta = { w, h, pixOff: off };
+    const view   = new DataView(buf);
+    const width  = view.getInt32(18, true);
+    const height = Math.abs(view.getInt32(22, true));
+    const bpp    = view.getUint16(28, true);
+    const pixOff = view.getUint32(10, true);
+
+    if (bpp !== 24) return { ok: false, reason: `BMP must be 24-bit RGB (got ${bpp}bpp)` };
+    if (width < CFG.PATCH_SIZE || height < CFG.PATCH_SIZE)
+      return { ok: false, reason: `BMP too small for ElasticTok (minimum ${CFG.PATCH_SIZE}×${CFG.PATCH_SIZE}px)` };
+
+    const rowStride = Math.ceil(width * 3 / 4) * 4;
+    const { patches, gridW, gridH } = elasticTokEncode(bytes.slice(pixOff), width, height, rowStride);
+    chunks = patches.map(p => ({ floats: p.chunk, patchR: p.patchR / Math.max(1, gridH-1), patchC: p.patchC / Math.max(1, gridW-1) }));
+    meta = { width, height, gridW, gridH, rowStride, encodingType: 'elastictok', patchSize: CFG.PATCH_SIZE };
 
   } else if (fid === FORMAT.WAV) {
     const view = new DataView(buf);
     const sr   = view.getUint32(24, true);
-    const ch   = view.getUint16(22, true);
-    // Find data chunk
     let doff = 12;
     while (doff < bytes.length - 8) {
       const id = String.fromCharCode(bytes[doff],bytes[doff+1],bytes[doff+2],bytes[doff+3]);
-      const sz = view.getUint32(doff+4, true);
       if (id === 'data') { doff += 8; break; }
-      doff += 8 + sz;
+      doff += 8 + view.getUint32(doff+4, true);
     }
-    const nSamp = Math.floor((bytes.length - doff) / 2);
-    floats = new Float32Array(nSamp);
-    for (let i = 0; i < nSamp; i++)
-      floats[i] = view.getInt16(doff + i*2, true) / 32768;
-    meta = { sr, ch, dataOff: doff };
+    const nSamplesTotal = Math.floor((bytes.length - doff) / 2);
+
+    const sv  = new SpikeVox(CFG.SPIKEVOX_TH, CFG.SPIKEVOX_LK, CFG.SPIKEVOX_RF);
+    sv._ensureState(CFG.CHUNK);
+    const acc = new Float32Array(CFG.CHUNK);
+
+    for (let i = 0; i < nSamplesTotal; i += CFG.CHUNK) {
+      const end = Math.min(i + CFG.CHUNK, nSamplesTotal);
+      const pcmWin = new Float32Array(end - i);
+      for (let j = 0; j < pcmWin.length; j++)
+        pcmWin[j] = view.getInt16(doff + (i+j)*2, true) / 32768;
+
+      const feats = sv.extractFeatures(pcmWin);
+      const { spikes } = sv.step(feats);
+      const spikeFeats = sv.spikesToFeatures(spikes, acc);
+
+      const chunk = new Float32Array(CFG.CHUNK);
+      for (let j = 0; j < CFG.CHUNK; j++) chunk[j] = spikeFeats[j] * 2 - 1; // [0,1]→[-1,1]
+      chunks.push({ floats: chunk, patchR: 0, patchC: 0 });
+    }
+    meta = { sr, nSamp: nSamplesTotal, encodingType: 'spikevox' };
 
   } else {
-    floats = new Float32Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) floats[i] = bytes[i] / 127.5 - 1;
+    // TXT / HTML — raw byte chunks
+    for (let i = 0; i + CFG.CHUNK <= bytes.length; i += CFG.CHUNK) {
+      const chunk = new Float32Array(CFG.CHUNK);
+      for (let j = 0; j < CFG.CHUNK; j++) chunk[j] = bytes[i+j] / 127.5 - 1;
+      chunks.push({ floats: chunk, patchR: 0, patchC: 0 });
+    }
   }
 
-  if (floats.length < CFG.CHUNK) return { ok: false, reason: 'File too small (< 256 elements)' };
-
-  // Chunk into windows
-  const chunks = [];
-  const n = Math.floor(floats.length / CFG.CHUNK);
-  for (let c = 0; c < n; c++) {
-    chunks.push(floats.slice(c * CFG.CHUNK, (c+1) * CFG.CHUNK));
-  }
-
+  if (!chunks.length) return { ok: false, reason: 'File too small (< 256 elements after encoding)' };
   return { ok: true, chunks, meta, fid };
 }
 
-function buildBMPHeader(w, h) {
-  const rowSize = Math.ceil(w * 3 / 4) * 4;
-  const dataSize = rowSize * Math.abs(h);
+function buildBMPHeader(w, h, rowStride) {
+  const dataSize = rowStride * h;
   const fileSize = 54 + dataSize;
   const hdr = new Uint8Array(54);
   const v   = new DataView(hdr.buffer);
@@ -1233,18 +1335,18 @@ function buildWAVHeader(nSamp, sr, ch) {
   const hdr = new Uint8Array(44);
   const v   = new DataView(hdr.buffer);
   hdr.set([0x52,0x49,0x46,0x46], 0);
-  v.setUint32(4,  36 + dataSize,    true);
+  v.setUint32(4,  36 + dataSize,  true);
   hdr.set([0x57,0x41,0x56,0x45], 8);
   hdr.set([0x66,0x6D,0x74,0x20], 12);
-  v.setUint32(16, 16,               true);
-  v.setUint16(20, 1,                true);
-  v.setUint16(22, ch,               true);
-  v.setUint32(24, sr,               true);
-  v.setUint32(28, sr * ch * 2,      true);
-  v.setUint16(32, ch * 2,           true);
-  v.setUint16(34, 16,               true);
+  v.setUint32(16, 16,             true);
+  v.setUint16(20, 1,              true);
+  v.setUint16(22, ch,             true);
+  v.setUint32(24, sr,             true);
+  v.setUint32(28, sr * ch * 2,    true);
+  v.setUint16(32, ch * 2,         true);
+  v.setUint16(34, 16,             true);
   hdr.set([0x64,0x61,0x74,0x61], 36);
-  v.setUint32(40, dataSize,         true);
+  v.setUint32(40, dataSize,       true);
   return hdr;
 }
 
@@ -1264,25 +1366,20 @@ function shannonEntropy(bytes) {
 }
 
 function rosaRatio(bytes) {
-  // Suffix automaton compression ratio approximation
-  // (simplified: unique bigram count / length as proxy)
   const regionSize = Math.min(4096, Math.floor(bytes.length / 3));
-  let totalRatio = 0, count = 0;
+  let total = 0, count = 0;
   for (let r = 0; r < 3; r++) {
     const start = Math.floor(r * bytes.length / 3);
     const slice = bytes.slice(start, start + regionSize);
     if (slice.length < 16) continue;
-    // Count unique bigrams
     const seen = new Set();
-    for (let i = 0; i < slice.length - 1; i++)
-      seen.add(slice[i] * 256 + slice[i+1]);
-    totalRatio += seen.size / slice.length;
+    for (let i = 0; i < slice.length - 1; i++) seen.add(slice[i] * 256 + slice[i+1]);
+    total += seen.size / slice.length;
     count++;
   }
-  return count > 0 ? totalRatio / count : 1;
+  return count > 0 ? total / count : 1;
 }
 
-// Expected ranges per format
 const FORMAT_RANGES = {
   [FORMAT.TXT]:  { entropyLo: 3.5, entropyHi: 7.0, rosaLo: 0.15, rosaHi: 0.9 },
   [FORMAT.HTML]: { entropyLo: 3.0, entropyHi: 7.0, rosaLo: 0.10, rosaHi: 0.85 },
@@ -1290,94 +1387,60 @@ const FORMAT_RANGES = {
   [FORMAT.WAV]:  { entropyLo: 3.5, entropyHi: 7.8, rosaLo: 0.08, rosaHi: 0.98 },
 };
 
-const FORMAT_MAGIC = {
-  [FORMAT.BMP]:  [0x42, 0x4D],
-  [FORMAT.WAV]:  [0x52, 0x49, 0x46, 0x46],
-  [FORMAT.TXT]:  null,
-  [FORMAT.HTML]: null,
-};
-
 function validateOutput(bytes, fid, meta) {
-  const checks = [];
-  let verdict = 'pass';
+  const checks = []; let verdict = 'pass';
 
-  // 1. Magic bytes
-  const magic = FORMAT_MAGIC[fid];
-  if (magic) {
+  // Magic bytes
+  const MAGIC = { [FORMAT.BMP]: [0x42,0x4D], [FORMAT.WAV]: [0x52,0x49,0x46,0x46] };
+  if (MAGIC[fid]) {
+    const m = MAGIC[fid];
     let ok = true;
-    for (let i = 0; i < magic.length; i++) if (bytes[i] !== magic[i]) { ok = false; break; }
-    checks.push({
-      icon: ok ? '✓' : '✗',
-      ok,
-      label: 'Magic Bytes',
-      value: ok
-        ? `${magic.map(b => '0x'+b.toString(16).padStart(2,'0').toUpperCase()).join(' ')} ✓`
-        : `Expected ${magic.map(b => '0x'+b.toString(16).toUpperCase()).join(' ')}, got ${
-            Array.from(bytes.slice(0,magic.length)).map(b=>'0x'+b.toString(16).toUpperCase()).join(' ')
-          }`
-    });
+    for (let i = 0; i < m.length; i++) if (bytes[i] !== m[i]) { ok = false; break; }
+    checks.push({ icon: ok?'✓':'✗', ok, label: 'Magic Bytes',
+      value: ok ? `${m.map(b=>'0x'+b.toString(16).toUpperCase()).join(' ')} ✓`
+                : `Expected ${m.map(b=>'0x'+b.toString(16).toUpperCase()).join(' ')}, got ${Array.from(bytes.slice(0,m.length)).map(b=>'0x'+b.toString(16).toUpperCase()).join(' ')}` });
     if (!ok) verdict = 'fail';
+  } else if (fid === FORMAT.HTML) {
+    const text = new TextDecoder().decode(bytes.slice(0,512)).toLowerCase();
+    const ok = text.includes('<html') || text.includes('<!doctype');
+    checks.push({ icon: ok?'✓':'⚠', ok, label: 'HTML Marker', value: ok ? 'Found' : 'Missing <html / !DOCTYPE' });
+    if (!ok && verdict !== 'fail') verdict = 'warn';
   } else {
-    // HTML: check for <html
-    if (fid === FORMAT.HTML) {
-      const text = new TextDecoder().decode(bytes.slice(0, 512)).toLowerCase();
-      const ok = text.includes('<html') || text.includes('<!doctype');
-      checks.push({ icon: ok ? '✓' : '⚠', ok, label: 'HTML Marker', value: ok ? 'Found <html / !DOCTYPE' : 'Missing <html / !DOCTYPE' });
-      if (!ok && verdict !== 'fail') verdict = 'warn';
-    } else {
-      checks.push({ icon: '—', ok: true, label: 'Magic Bytes', value: 'Not required for TXT' });
-    }
+    checks.push({ icon: '—', ok: true, label: 'Magic Bytes', value: 'Not required for TXT' });
   }
 
-  // 2. Shannon entropy
   const entropy = shannonEntropy(bytes);
   const er = FORMAT_RANGES[fid];
   const eOk = entropy >= er.entropyLo && entropy <= er.entropyHi;
-  checks.push({
-    icon: eOk ? '✓' : '⚠',
-    ok: eOk,
-    label: 'Entropy',
-    value: `${entropy.toFixed(3)} bits/byte (expected ${er.entropyLo}–${er.entropyHi})`
-  });
+  checks.push({ icon: eOk?'✓':'⚠', ok: eOk, label: 'Entropy',
+    value: `${entropy.toFixed(3)} bits/byte (expected ${er.entropyLo}–${er.entropyHi})` });
   if (!eOk && verdict !== 'fail') verdict = 'warn';
 
-  // 3. ROSA structural ratio
   const rosa = rosaRatio(bytes);
   const rOk = rosa >= er.rosaLo && rosa <= er.rosaHi;
-  checks.push({
-    icon: rOk ? '✓' : '⚠',
-    ok: rOk,
-    label: 'ROSA Structure',
-    value: `ratio ${rosa.toFixed(3)} (expected ${er.rosaLo}–${er.rosaHi})`
-  });
+  checks.push({ icon: rOk?'✓':'⚠', ok: rOk, label: 'ROSA Structure',
+    value: `ratio ${rosa.toFixed(3)} (expected ${er.rosaLo}–${er.rosaHi})` });
   if (!rOk && verdict !== 'fail') verdict = 'warn';
 
-  // 4. Format-specific
-  if (fid === FORMAT.BMP && meta && meta.w && meta.h) {
-    const rowSize = Math.ceil(meta.w * 3 / 4) * 4;
-    const expected = 54 + rowSize * meta.h;
-    const ok = Math.abs(bytes.length - expected) <= rowSize;
-    checks.push({
-      icon: ok ? '✓' : '⚠', ok,
-      label: 'BMP Dimensions',
-      value: ok
-        ? `${meta.w}×${meta.h}px, ${bytes.length} bytes ✓`
-        : `Expected ~${expected} bytes for ${meta.w}×${meta.h}, got ${bytes.length}`
-    });
+  if (fid === FORMAT.BMP && meta?.width && meta?.height) {
+    const rowStride = Math.ceil(meta.width * 3 / 4) * 4;
+    const expected  = 54 + rowStride * meta.height;
+    const ok = bytes.length === expected;
+    checks.push({ icon: ok?'✓':'⚠', ok, label: 'BMP Size',
+      value: ok ? `${meta.width}×${meta.height}px, ${bytes.length} bytes ✓`
+                : `Expected ${expected}, got ${bytes.length}` });
     if (!ok && verdict !== 'fail') verdict = 'warn';
+    checks.push({ icon: '✓', ok: true, label: 'Encoding', value: `ElasticTok ${CFG.PATCH_SIZE}×${CFG.PATCH_SIZE}px patches (${meta.gridW||'?'}×${meta.gridH||'?'} grid)` });
   }
 
-  if (fid === FORMAT.WAV && meta && meta.nSamp) {
+  if (fid === FORMAT.WAV && meta?.nSamp) {
     const expectedData = meta.nSamp * 2;
     const ok = bytes.length >= 44 + expectedData;
-    checks.push({
-      icon: ok ? '✓' : '⚠', ok,
-      label: 'WAV Data Size',
-      value: ok
-        ? `${meta.nSamp} samples (${(meta.nSamp / (meta.sr||22050)).toFixed(2)}s) ✓`
-        : `Size mismatch: expected ≥${44+expectedData}, got ${bytes.length}`
-    });
+    checks.push({ icon: ok?'✓':'⚠', ok, label: 'WAV Data Size',
+      value: ok ? `${meta.nSamp} samples (${(meta.nSamp/(meta.sr||22050)).toFixed(2)}s) ✓`
+                : `Size mismatch` });
     if (!ok && verdict !== 'fail') verdict = 'warn';
+    checks.push({ icon: '✓', ok: true, label: 'Encoding', value: `SpikeVox LIF (V_th=${CFG.SPIKEVOX_TH}, leak=${CFG.SPIKEVOX_LK}) → band-sinusoidal decode` });
   }
 
   return { checks, verdict };
@@ -1386,71 +1449,58 @@ function validateOutput(bytes, fid, meta) {
 // ════════════════════════════════════════════════════════════════════
 // APP STATE
 // ════════════════════════════════════════════════════════════════════
-const CORPUS = [];   // { fid, chunks: Float32Array[], meta, name }
+const CORPUS = [];
 let   MODEL  = null;
 
 const TRAIN = {
-  running: false,
-  steps:   0,
-  bestLoss: Infinity,
-  lossHistory: [],
-  _raf: null,
-  _should_pause: false,
+  running: false, steps: 0, bestLoss: Infinity,
+  lossHistory: [], _should_pause: false,
 };
 
-const OUTPUT = {
-  bytes: null,
-  fid:   null,
-  meta:  null,
-};
+const OUTPUT = { bytes: null, fid: null, meta: null };
+let   _wavAudioCtx = null;
+let   _wavSource   = null;
 
 // ════════════════════════════════════════════════════════════════════
 // TRAINING LOOP
 // ════════════════════════════════════════════════════════════════════
 async function trainingLoop() {
   if (!MODEL) MODEL = new ScoreNet();
-
   setStatus('running', 'Training…');
   document.getElementById('btn-start').disabled = true;
   document.getElementById('btn-pause').disabled = false;
 
-  // Check there's something to train on
-  let hasChunks = false;
-  for (const e of CORPUS) if (e && e.chunks.length) { hasChunks = true; break; }
-  if (!hasChunks) { setStatus('', 'No chunks. Add files first.'); return; }
-
-  TRAIN.running      = true;
-  TRAIN._should_pause = false;
+  TRAIN.running = true; TRAIN._should_pause = false;
 
   while (TRAIN.running && !TRAIN._should_pause) {
-    // Live corpus sampling — rebuilds pool each step so new files are seen immediately
+    // Live corpus sampling — rebuilt each step, picks up new files immediately
     const pool = [];
     for (const entry of CORPUS) {
       if (!entry) continue;
       for (const c of entry.chunks)
-        pool.push({ chunk: c, fid: entry.fid, tagIds: entry.tagIds || [] });
+        pool.push({ floats: c.floats, patchR: c.patchR, patchC: c.patchC,
+                    fid: entry.fid, tagIds: entry.tagIds || [] });
     }
     if (!pool.length) { setStatus('paused', 'Corpus empty — add files to continue.'); break; }
 
-    // Sample random chunk + its tags
-    const { chunk, fid, tagIds } = pool[Math.floor(Math.random() * pool.length)];
+    const sample = pool[Math.floor(Math.random() * pool.length)];
+    const { floats, patchR, patchC, fid, tagIds } = sample;
     const t = 1 + Math.floor(Math.random() * CFG.T);
 
-    // Forward diffusion
-    const { xt, noise } = DIFF.forward(chunk, t);
+    const { xt, noise } = DIFF.forward(floats, t);
+    const epsPred = MODEL.forward(xt, t, fid, tagIds, patchR, patchC);
 
-    // ScoreNet forward
-    const epsPred = MODEL.forward(xt, t, fid, tagIds);
-
-    // MSE loss + backward
     let loss = 0;
     const gradOut = new Float32Array(CFG.CHUNK);
-    for (let i = 0; i < CFG.CHUNK; i++) {
-      const d     = epsPred[i] - noise[i];
-      loss       += d * d;
-      gradOut[i]  = 2 * d / CFG.CHUNK;
+
+    // For BMP patches, only backprop through the 192 patch bytes; ignore padding noise
+    const activeDim = fid === FORMAT.BMP ? 192 : CFG.CHUNK;
+    for (let i = 0; i < activeDim; i++) {
+      const d = epsPred[i] - noise[i];
+      loss += d * d;
+      gradOut[i] = 2 * d / activeDim;
     }
-    loss /= CFG.CHUNK;
+    loss /= activeDim;
 
     MODEL.backward(gradOut);
     MODEL.step();
@@ -1461,7 +1511,6 @@ async function trainingLoop() {
     if (loss < TRAIN.bestLoss) TRAIN.bestLoss = loss;
     if (TRAIN.lossHistory.length > 400) TRAIN.lossHistory.shift();
 
-    // Yield and update UI
     if (TRAIN.steps % CFG.YIELD_EVERY === 0) {
       updateTrainUI(loss);
       await yieldToMain();
@@ -1471,8 +1520,8 @@ async function trainingLoop() {
   TRAIN.running = false;
   if (TRAIN._should_pause) {
     setStatus('paused', `Paused at step ${TRAIN.steps}`);
-    document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-start').textContent = 'Resume';
+    document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-pause').disabled = true;
   } else {
     setStatus('', `Stopped at step ${TRAIN.steps}`);
@@ -1490,77 +1539,88 @@ async function runGeneration() {
   const fid    = parseInt(document.getElementById('gen-format').value);
   const tagStr = document.getElementById('gen-tags').value;
   const tagIds = tagToIds(tagStr);
-  const steps  = parseInt(document.getElementById('gen-steps').value);
-
+  const steps  = Math.min(parseInt(document.getElementById('gen-steps').value), CFG.T);
   let nChunks, meta = {};
+  const HOP = CFG.CHUNK >> 1;
 
   if (fid === FORMAT.BMP) {
-    const w = parseInt(document.getElementById('gen-bmp-w').value);
-    const h = parseInt(document.getElementById('gen-bmp-h').value);
-    const rowSize = Math.ceil(w * 3 / 4) * 4;
-    const nBytes  = rowSize * h;
-    nChunks = Math.max(1, Math.ceil(nBytes / CFG.CHUNK));
-    meta = { w, h };
+    const w = Math.max(CFG.PATCH_SIZE, parseInt(document.getElementById('gen-bmp-w').value));
+    const h = Math.max(CFG.PATCH_SIZE, parseInt(document.getElementById('gen-bmp-h').value));
+    const gridW = Math.floor(w / CFG.PATCH_SIZE);
+    const gridH = Math.floor(h / CFG.PATCH_SIZE);
+    nChunks = gridW * gridH;
+    meta = { width: w, height: h, gridW, gridH, patchSize: CFG.PATCH_SIZE,
+             rowStride: Math.ceil(w * 3 / 4) * 4, encodingType: 'elastictok' };
+
   } else if (fid === FORMAT.WAV) {
     const dur = parseFloat(document.getElementById('gen-wav-dur').value);
     const sr  = parseInt(document.getElementById('gen-wav-sr').value);
-    const ch  = 1;
     const nSamp = Math.ceil(dur * sr);
     nChunks = Math.max(1, Math.ceil(nSamp / CFG.CHUNK));
-    meta = { sr, ch, nSamp };
+    meta = { sr, ch: 1, nSamp, encodingType: 'spikevox' };
+
   } else {
     const chars = parseInt(document.getElementById('gen-chars').value);
     nChunks = Math.max(1, Math.ceil(chars / CFG.CHUNK));
+    meta = {};
   }
 
   document.getElementById('btn-generate').disabled = true;
   document.getElementById('gen-progress').style.width = '0%';
+  document.getElementById('gen-progress-text').textContent = 'Starting…';
 
-  const T_gen = Math.min(steps, CFG.T);
-  const HOP   = CFG.CHUNK >> 1; // 128 — 50% overlap hop size
+  const setProgress = (c, total) => {
+    const pct = ((c+1)/total*100).toFixed(0);
+    document.getElementById('gen-progress').style.width = pct + '%';
+    document.getElementById('gen-progress-text').textContent =
+      `Chunk ${c+1} / ${total} (${pct}%)`;
+  };
 
-  // Triangular window: w[i] + w[i + CHUNK/2] = 1 for all i
-  // Perfect reconstruction property at 50% overlap
-  const triWin = new Float32Array(CFG.CHUNK);
-  for (let i = 0; i < CFG.CHUNK; i++)
-    triWin[i] = i < CFG.CHUNK/2 ? 2*i/CFG.CHUNK : 2*(CFG.CHUNK-i)/CFG.CHUNK;
-
-  // Generate one denoised chunk from pure noise
-  async function genChunk() {
+  async function genChunk(patchR=0, patchC=0) {
     let xt = new Float32Array(CFG.CHUNK);
     for (let i = 0; i < CFG.CHUNK; i++) xt[i] = randn();
-    for (let t = T_gen; t >= 1; t--) {
-      const ep = MODEL.forward(xt, t, fid, tagIds);
+    for (let t = steps; t >= 1; t--) {
+      const ep = MODEL.forward(xt, t, fid, tagIds, patchR, patchC);
       xt = DIFF.reverseStep(xt, ep, t);
     }
     return xt;
   }
 
-  // flatOut: normalized float values in [-1, 1], length = target payload size
-  let flatOut;
+  let rawBytes;
 
-  if (fid === FORMAT.TXT || fid === FORMAT.HTML) {
-    // Simple chaining — byte boundaries are invisible for text formats
-    flatOut = new Float32Array(nChunks * CFG.CHUNK);
-    for (let c = 0; c < nChunks; c++) {
-      const xt = await genChunk();
-      flatOut.set(xt, c * CFG.CHUNK);
-      const pct = ((c+1)/nChunks*100).toFixed(0);
-      document.getElementById('gen-progress').style.width = pct+'%';
-      document.getElementById('gen-progress-text').textContent = `Chunk ${c+1} / ${nChunks} (${pct}%)`;
-      if (c % 2 === 0) await yieldToMain();
+  // ── BMP: independent patch generation (ElasticTok — spatial, not temporal)
+  if (fid === FORMAT.BMP) {
+    const { width: W, height: H, gridW, gridH, rowStride } = meta;
+    const genPatches = [];
+
+    for (let pr = 0; pr < gridH; pr++) {
+      for (let pc = 0; pc < gridW; pc++) {
+        const patchR = gridH > 1 ? pr / (gridH - 1) : 0;
+        const patchC = gridW > 1 ? pc / (gridW - 1) : 0;
+        const chunk = await genChunk(patchR, patchC);
+        genPatches.push(chunk);
+        setProgress(pr * gridW + pc, nChunks);
+        if ((pr * gridW + pc) % 4 === 0) await yieldToMain();
+      }
     }
 
-  } else {
-    // OLA (overlap-add) for WAV and BMP
-    // Each chunk overlaps the previous by 50%; triangular windowing ensures
-    // smooth crossfade with perfect reconstruction at every seam.
-    const targetLen = fid === FORMAT.WAV
-      ? meta.nSamp
-      : Math.ceil(meta.w * 3 / 4) * 4 * meta.h;
-    const nOLA  = Math.max(1, Math.ceil((targetLen - CFG.CHUNK) / HOP) + 1);
-    const accum  = new Float32Array(targetLen + CFG.CHUNK); // +CHUNK for tail safety
-    const weight = new Float32Array(targetLen + CFG.CHUNK);
+    const pixBuf = elasticTokDecode(genPatches, W, H, rowStride);
+    const hdr = buildBMPHeader(W, H, rowStride);
+    rawBytes = new Uint8Array(hdr.length + pixBuf.length);
+    rawBytes.set(hdr, 0); rawBytes.set(pixBuf, hdr.length);
+
+  // ── WAV: OLA in spike-feature domain, then decode to PCM
+  } else if (fid === FORMAT.WAV) {
+    const { nSamp, sr, ch } = meta;
+    const nOLA  = Math.max(1, Math.ceil((nSamp - CFG.CHUNK) / HOP) + 1);
+
+    // Triangular window for OLA
+    const triWin = new Float32Array(CFG.CHUNK);
+    for (let i = 0; i < CFG.CHUNK; i++)
+      triWin[i] = i < CFG.CHUNK/2 ? 2*i/CFG.CHUNK : 2*(CFG.CHUNK-i)/CFG.CHUNK;
+
+    const accum  = new Float32Array(nSamp + CFG.CHUNK);
+    const weight = new Float32Array(nSamp + CFG.CHUNK);
 
     for (let c = 0; c < nOLA; c++) {
       const xt     = await genChunk();
@@ -1569,59 +1629,62 @@ async function runGeneration() {
         accum[offset+i]  += xt[i] * triWin[i];
         weight[offset+i] += triWin[i];
       }
-      const pct = ((c+1)/nOLA*100).toFixed(0);
-      document.getElementById('gen-progress').style.width = pct+'%';
-      document.getElementById('gen-progress-text').textContent = `Chunk ${c+1} / ${nOLA} — OLA (${pct}%)`;
+      setProgress(c, nOLA);
       if (c % 2 === 0) await yieldToMain();
     }
 
-    // Normalize by accumulated window weight to recover correct amplitude
-    flatOut = new Float32Array(targetLen);
-    for (let i = 0; i < targetLen; i++)
-      flatOut[i] = weight[i] > 1e-6 ? accum[i] / weight[i] : 0;
-  }
+    // Normalize OLA output back to spike feature space [0,1]
+    const spikeFeats = new Float32Array(nSamp);
+    for (let i = 0; i < nSamp; i++) {
+      const norm = weight[i] > 1e-6 ? accum[i] / weight[i] : 0;
+      spikeFeats[i] = clamp((norm + 1) / 2, 0, 1); // [-1,1]→[0,1]
+    }
 
-  // Denormalize + assemble with format header
-  let rawBytes;
+    // Decode spike features to PCM: process in feature-chunks, synthesize PCM per chunk
+    const pcmAll  = new Int16Array(nSamp);
+    const sampPerFeat = 4; // ~4 PCM samples synthesized per spike feature
+    const totalPCM   = nSamp * sampPerFeat;
+    const pcmFull    = new Float32Array(totalPCM);
 
-  if (fid === FORMAT.WAV) {
-    const { sr, ch, nSamp } = meta;
+    for (let i = 0; i < nSamp; i += CFG.CHUNK) {
+      const featChunk = spikeFeats.slice(i, Math.min(i + CFG.CHUNK, nSamp));
+      const nPCM = featChunk.length * sampPerFeat;
+      const pcm  = spikeFeatsToPCM(featChunk, nPCM, sr);
+      const off  = i * sampPerFeat;
+      for (let j = 0; j < nPCM && off+j < pcmFull.length; j++) pcmFull[off+j] = pcm[j];
+    }
+
+    // Resample pcmFull back to nSamp via linear interpolation
+    for (let i = 0; i < nSamp; i++) {
+      const fi = i * sampPerFeat;
+      const lo = Math.floor(fi), hi = Math.min(lo+1, pcmFull.length-1);
+      const t  = fi - lo;
+      const v  = pcmFull[lo] * (1-t) + pcmFull[hi] * t;
+      pcmAll[i] = Math.round(clamp(v, -1, 1) * 32767);
+    }
+
     const hdr = buildWAVHeader(nSamp, sr, ch);
-    const pcm = new Int16Array(nSamp);
-    for (let i = 0; i < nSamp; i++)
-      pcm[i] = Math.round(clamp(flatOut[i], -1, 1) * 32767);
-    rawBytes = new Uint8Array(hdr.length + pcm.buffer.byteLength);
-    rawBytes.set(hdr, 0);
-    rawBytes.set(new Uint8Array(pcm.buffer), hdr.length);
-    meta.nSamp = nSamp;
+    rawBytes = new Uint8Array(hdr.length + pcmAll.buffer.byteLength);
+    rawBytes.set(hdr, 0); rawBytes.set(new Uint8Array(pcmAll.buffer), hdr.length);
 
-  } else if (fid === FORMAT.BMP) {
-    const { w, h } = meta;
-    const rowSize = Math.ceil(w * 3 / 4) * 4;
-    const hdr = buildBMPHeader(w, h);
-    const pix = new Uint8Array(rowSize * h);
-    for (let i = 0; i < pix.length; i++)
-      pix[i] = clamp(Math.round((flatOut[i] + 1) * 127.5), 0, 255);
-    rawBytes = new Uint8Array(hdr.length + pix.length);
-    rawBytes.set(hdr, 0); rawBytes.set(pix, hdr.length);
-
+  // ── TXT / HTML: simple chaining
   } else {
-    // TXT / HTML — truncate to exact requested length
-    const exactLen = fid === FORMAT.HTML
-      ? parseInt(document.getElementById('gen-chars').value)
-      : parseInt(document.getElementById('gen-chars').value);
-    rawBytes = new Uint8Array(Math.min(exactLen, flatOut.length));
+    const chars   = parseInt(document.getElementById('gen-chars').value);
+    const flatOut = new Float32Array(nChunks * CFG.CHUNK);
+    for (let c = 0; c < nChunks; c++) {
+      const xt = await genChunk();
+      flatOut.set(xt, c * CFG.CHUNK);
+      setProgress(c, nChunks);
+      if (c % 2 === 0) await yieldToMain();
+    }
+    rawBytes = new Uint8Array(Math.min(chars, flatOut.length));
     for (let i = 0; i < rawBytes.length; i++)
       rawBytes[i] = clamp(Math.round((flatOut[i] + 1) * 127.5), 0, 255);
   }
 
-  OUTPUT.bytes = rawBytes;
-  OUTPUT.fid   = fid;
-  OUTPUT.meta  = meta;
-
+  OUTPUT.bytes = rawBytes; OUTPUT.fid = fid; OUTPUT.meta = meta;
   renderOutput(rawBytes, fid, meta);
 
-  // Validate
   const { checks, verdict } = validateOutput(rawBytes, fid, meta);
   renderValidation(checks, verdict);
 
@@ -1629,6 +1692,9 @@ async function runGeneration() {
   document.getElementById('btn-download').disabled = false;
   document.getElementById('gen-progress').style.width = '100%';
   document.getElementById('gen-progress-text').textContent = 'Done.';
+
+  // Auto-switch to validate tab on completion
+  switchTab('validate');
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1637,39 +1703,52 @@ async function runGeneration() {
 function renderOutput(bytes, fid, meta) {
   const preview = document.getElementById('output-preview');
   const bmpCvs  = document.getElementById('bmp-preview-canvas');
+  const iframe  = document.getElementById('html-preview-frame');
+  const wavDiv  = document.getElementById('wav-player');
+
+  // Hide everything first
   bmpCvs.style.display = 'none';
+  iframe.style.display = 'none';
+  wavDiv.style.display = 'none';
   preview.style.display = 'block';
 
-  if (fid === FORMAT.TXT || fid === FORMAT.HTML) {
+  if (fid === FORMAT.TXT) {
+    try { preview.textContent = new TextDecoder('utf-8',{fatal:false}).decode(bytes).slice(0,2000); }
+    catch { preview.textContent = '[decode error]'; }
+
+  } else if (fid === FORMAT.HTML) {
+    // Iframe sandboxed preview
     try {
-      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-      preview.textContent = text.slice(0, 2000) + (text.length > 2000 ? '\n…' : '');
-    } catch { preview.textContent = '[decode error]'; }
+      const html = new TextDecoder('utf-8',{fatal:false}).decode(bytes);
+      preview.style.display = 'none';
+      iframe.style.display = 'block';
+      iframe.srcdoc = html;
+    } catch { preview.textContent = '[HTML decode error]'; }
 
   } else if (fid === FORMAT.BMP) {
-    const { w, h } = meta;
-    bmpCvs.width = w; bmpCvs.height = h;
+    const { width: W, height: H } = meta;
+    bmpCvs.width = W; bmpCvs.height = H;
     bmpCvs.style.display = 'block';
     preview.style.display = 'none';
-    const ctx  = bmpCvs.getContext('2d');
-    const img  = ctx.createImageData(w, h);
-    const rowSize = Math.ceil(w * 3 / 4) * 4;
-    for (let row = 0; row < h; row++) {
-      // BMP is bottom-up
-      const srcRow = bytes.slice(54 + (h-1-row)*rowSize, 54 + (h-row)*rowSize);
-      for (let col = 0; col < w; col++) {
-        const dstIdx = (row * w + col) * 4;
-        // BMP stores BGR
-        img.data[dstIdx]   = srcRow[col*3 + 2]; // R
-        img.data[dstIdx+1] = srcRow[col*3 + 1]; // G
-        img.data[dstIdx+2] = srcRow[col*3];     // B
+    const ctx = bmpCvs.getContext('2d');
+    const img = ctx.createImageData(W, H);
+    const rowStride = Math.ceil(W * 3 / 4) * 4;
+    for (let row = 0; row < H; row++) {
+      const bmpRow = H - 1 - row; // BMP is bottom-up
+      const src    = 54 + bmpRow * rowStride;
+      for (let col = 0; col < W; col++) {
+        const dstIdx = (row * W + col) * 4;
+        img.data[dstIdx]   = bytes[src + col*3 + 2]; // R (BMP stores BGR)
+        img.data[dstIdx+1] = bytes[src + col*3 + 1]; // G
+        img.data[dstIdx+2] = bytes[src + col*3];     // B
         img.data[dstIdx+3] = 255;
       }
     }
     ctx.putImageData(img, 0, 0);
 
   } else if (fid === FORMAT.WAV) {
-    preview.textContent = `WAV generated: ${(meta.nSamp / meta.sr).toFixed(2)}s @ ${meta.sr}Hz mono\n${bytes.length} bytes total`;
+    preview.textContent = `WAV (SpikeVox): ${(meta.nSamp / (meta.sr||22050)).toFixed(2)}s @ ${meta.sr||22050}Hz mono · ${bytes.length} bytes`;
+    wavDiv.style.display = 'block';
   }
 }
 
@@ -1684,14 +1763,38 @@ function renderValidation(checks, verdict) {
       </div>
     </div>
   `).join('');
-
   const vEl = document.getElementById('validate-verdict');
   vEl.className = `verdict verdict-${verdict}`;
-  vEl.textContent = verdict === 'pass'
-    ? '✓ PASS'
-    : verdict === 'warn'
-    ? '⚠ WARN — output may be low quality'
+  vEl.textContent = verdict === 'pass' ? '✓ PASS'
+    : verdict === 'warn' ? '⚠ WARN — output may be low quality'
     : '✗ FAIL — try generating again or train longer';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// WAV PLAYBACK via Web Audio API
+// ════════════════════════════════════════════════════════════════════
+async function playGeneratedWAV() {
+  if (!OUTPUT.bytes || OUTPUT.fid !== FORMAT.WAV) return;
+  stopWAV();
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    _wavAudioCtx = new AudioCtx();
+    const audioBuf = await _wavAudioCtx.decodeAudioData(OUTPUT.bytes.buffer.slice(0));
+    _wavSource = _wavAudioCtx.createBufferSource();
+    _wavSource.buffer = audioBuf;
+    _wavSource.connect(_wavAudioCtx.destination);
+    _wavSource.start();
+    _wavSource.onended = () => { document.getElementById('btn-wav-play').disabled = false; };
+    document.getElementById('btn-wav-play').disabled = true;
+  } catch (e) {
+    alert('WAV playback failed: ' + e.message);
+  }
+}
+
+function stopWAV() {
+  if (_wavSource) { try { _wavSource.stop(); } catch{} _wavSource = null; }
+  if (_wavAudioCtx) { try { _wavAudioCtx.close(); } catch{} _wavAudioCtx = null; }
+  document.getElementById('btn-wav-play').disabled = false;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1702,24 +1805,24 @@ function drawLoss() {
   const ctx = cvs.getContext('2d');
   const W = cvs.width, H = cvs.height;
   ctx.clearRect(0, 0, W, H);
-
   const hist = TRAIN.lossHistory;
   if (hist.length < 2) return;
-
   const maxL = Math.max(...hist) * 1.05;
   const minL = Math.min(...hist) * 0.95;
 
-  ctx.strokeStyle = '#2a2545';
-  ctx.lineWidth = 0.5;
-  const nGrid = 4;
-  for (let i = 1; i < nGrid; i++) {
-    const y = H * i / nGrid;
+  ctx.strokeStyle = '#2a2545'; ctx.lineWidth = 0.5;
+  for (let i = 1; i < 4; i++) {
+    const y = H * i / 4;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
   }
 
-  // Loss line
-  ctx.strokeStyle = '#7c5cfc';
-  ctx.lineWidth = 1.5;
+  const recent = hist.slice(-20);
+  const avg = recent.reduce((a,b) => a+b, 0) / recent.length;
+  const yAvg = H - ((avg - minL) / (maxL - minL + 1e-9)) * H;
+  ctx.fillStyle = 'rgba(124,92,252,0.08)';
+  ctx.fillRect(0, yAvg, W, H - yAvg);
+
+  ctx.strokeStyle = '#7c5cfc'; ctx.lineWidth = 1.5;
   ctx.beginPath();
   for (let i = 0; i < hist.length; i++) {
     const x = (i / (hist.length - 1)) * W;
@@ -1727,27 +1830,15 @@ function drawLoss() {
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
   ctx.stroke();
-
-  // Recent avg highlight
-  const recent = hist.slice(-20);
-  const avg = recent.reduce((a,b) => a+b, 0) / recent.length;
-  ctx.fillStyle = 'rgba(124,92,252,0.08)';
-  const yAvg = H - ((avg - minL) / (maxL - minL + 1e-9)) * H;
-  ctx.fillRect(0, yAvg, W, H - yAvg);
 }
 
 // ════════════════════════════════════════════════════════════════════
 // UI HELPERS
 // ════════════════════════════════════════════════════════════════════
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach((t,i) => {
-    const names = ['train','generate','validate','model'];
-    t.classList.toggle('active', names[i] === name);
-  });
-  document.querySelectorAll('.pane').forEach((p,i) => {
-    const names = ['pane-train','pane-generate','pane-validate','pane-model'];
-    p.classList.toggle('active', p.id === 'pane-' + name);
-  });
+  const names = ['train','generate','validate','model'];
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', names[i] === name));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
 }
 
 function setStatus(cls, msg) {
@@ -1757,37 +1848,23 @@ function setStatus(cls, msg) {
 }
 
 function updateTrainUI(loss) {
-  const lv = document.getElementById('loss-val');
-  const hS = document.getElementById('h-steps');
-  const hL = document.getElementById('h-loss');
-  const hC = document.getElementById('h-corpus');
-  const mS = document.getElementById('m-steps');
-  const mB = document.getElementById('m-bestloss');
-  const mCh = document.getElementById('m-chunks');
-  const mP = document.getElementById('m-params');
-
-  const lStr = loss.toFixed(4);
-  lv.textContent = lStr;
-  hS.textContent = TRAIN.steps;
-  hL.textContent = lStr;
-
-  let totalChunks = 0;
-  for (const e of CORPUS) if (e) totalChunks += e.chunks.length;
-  hC.textContent = totalChunks;
-
-  mS.textContent  = TRAIN.steps;
-  mB.textContent  = TRAIN.bestLoss < Infinity ? TRAIN.bestLoss.toFixed(4) : '—';
-  mCh.textContent = totalChunks;
-  if (MODEL) mP.textContent = MODEL.paramCount().toLocaleString();
-
+  document.getElementById('loss-val').textContent = loss.toFixed(4);
+  document.getElementById('h-steps').textContent  = TRAIN.steps;
+  document.getElementById('h-loss').textContent   = loss.toFixed(4);
+  document.getElementById('m-steps').textContent  = TRAIN.steps;
+  document.getElementById('m-bestloss').textContent = TRAIN.bestLoss < Infinity ? TRAIN.bestLoss.toFixed(4) : '—';
+  let tc = 0; for (const e of CORPUS) if (e) tc += e.chunks.length;
+  document.getElementById('h-corpus').textContent = tc;
+  document.getElementById('m-chunks').textContent = tc;
+  if (MODEL) document.getElementById('m-params').textContent = MODEL.paramCount().toLocaleString();
   drawLoss();
 }
 
 function updateSizeControls() {
   const fid = parseInt(document.getElementById('gen-format').value);
-  document.getElementById('size-row-text').style.display = (fid === FORMAT.TXT || fid === FORMAT.HTML) ? '' : 'none';
-  document.getElementById('size-row-bmp').style.display  = (fid === FORMAT.BMP) ? '' : 'none';
-  document.getElementById('size-row-wav').style.display  = (fid === FORMAT.WAV) ? '' : 'none';
+  document.getElementById('size-row-text').style.display = (fid < 2) ? '' : 'none';
+  document.getElementById('size-row-bmp').style.display  = (fid === 2) ? '' : 'none';
+  document.getElementById('size-row-wav').style.display  = (fid === 3) ? '' : 'none';
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1797,38 +1874,23 @@ function startTraining() {
   if (!MODEL) MODEL = new ScoreNet();
   if (TRAIN.running) return;
 
-  // Corpus size warning
-  const formatCounts = {};
-  for (const e of CORPUS) {
-    if (!e) continue;
-    formatCounts[e.fid] = (formatCounts[e.fid] || 0) + e.chunks.length;
-  }
-  const totalChunks = Object.values(formatCounts).reduce((a,b) => a+b, 0);
-  if (totalChunks === 0) {
-    setStatus('', 'No files loaded. Drop some files first.');
-    return;
-  }
-  if (totalChunks < 10) {
-    setStatus('paused', `⚠ Small corpus (${totalChunks} chunks). Model may overfit. Add more files for better results.`);
-    // Don't block — let them train but warn
-  }
+  let totalChunks = 0;
+  for (const e of CORPUS) if (e) totalChunks += e.chunks.length;
+  if (totalChunks === 0) { setStatus('', 'No files loaded. Drop some files first.'); return; }
+  if (totalChunks < 10)
+    setStatus('paused', `⚠ Small corpus (${totalChunks} chunks). Consider adding more files for better results.`);
 
   trainingLoop();
 }
 
-function pauseTraining() {
-  TRAIN._should_pause = true;
-}
+function pauseTraining() { TRAIN._should_pause = true; }
 
 function resetModel() {
-  if (TRAIN.running) { TRAIN._should_pause = true; }
+  if (TRAIN.running) TRAIN._should_pause = true;
   setTimeout(() => {
     MODEL = new ScoreNet();
-    TRAIN.steps = 0;
-    TRAIN.bestLoss = Infinity;
-    TRAIN.lossHistory = [];
-    drawLoss();
-    setStatus('', 'Model reset. Ready.');
+    TRAIN.steps = 0; TRAIN.bestLoss = Infinity; TRAIN.lossHistory = [];
+    drawLoss(); setStatus('', 'Model reset. Ready.');
     document.getElementById('btn-start').textContent = 'Start';
     document.getElementById('btn-start').disabled = false;
     document.getElementById('btn-pause').disabled = true;
@@ -1837,28 +1899,19 @@ function resetModel() {
     document.getElementById('h-loss').textContent = '—';
     document.getElementById('m-steps').textContent = '0';
     document.getElementById('m-bestloss').textContent = '—';
-  }, 100);
+    if (MODEL) document.getElementById('m-params').textContent = MODEL.paramCount().toLocaleString();
+  }, 150);
 }
 
 // ════════════════════════════════════════════════════════════════════
 // FILE HANDLING
 // ════════════════════════════════════════════════════════════════════
-
-// Approach B: extract vocab words from filename automatically
-function autoTagFromFilename(name) {
-  const stem   = name.replace(/\.[^.]+$/, '').toLowerCase();
-  const tokens = stem.split(/[\s_\-\.]+/);
-  const matched = [...new Set(tokens.filter(t => VOCAB_WORDS.includes(t)))];
-  return matched.join(' ');
-}
 async function addFile(file) {
-  const fid = detectFormat(file);
+  const fid    = detectFormat(file);
   const result = await parseFile(file, fid);
-
-  const badgeClass = ['badge-txt','badge-html','badge-bmp','badge-wav'][fid];
-
-  const entry = document.createElement('div');
+  const entry  = document.createElement('div');
   entry.className = 'file-entry';
+  const badgeClass = ['badge-txt','badge-html','badge-bmp','badge-wav'][fid];
 
   if (!result.ok) {
     entry.innerHTML = `
@@ -1867,50 +1920,46 @@ async function addFile(file) {
         <span class="fname">${esc(file.name)}</span>
         <span class="fsize">${fmtSize(file.size)}</span>
         <span class="fstatus bad">✗ ${esc(result.reason)}</span>
-      </div>
-    `;
+      </div>`;
     document.getElementById('file-list').appendChild(entry);
     return;
   }
 
-  // Auto-tag from filename (Approach B)
   const autoTags = autoTagFromFilename(file.name);
-
   const corpusEntry = {
     fid, chunks: result.chunks, meta: result.meta, name: file.name,
     tagStr: autoTags, tagIds: tagToIds(autoTags)
   };
   CORPUS.push(corpusEntry);
-  const corpusIdx = CORPUS.length - 1;
+  const idx = CORPUS.length - 1;
+  const encBadge = result.meta?.encodingType
+    ? `<span class="enc-badge">${result.meta.encodingType}</span>` : '';
 
   entry.innerHTML = `
     <div class="file-entry-header">
       <span class="fbadge ${badgeClass}">${FMT_NAME[fid].toUpperCase()}</span>
       <span class="fname">${esc(file.name)}</span>
       <span class="fsize">${fmtSize(file.size)}</span>
+      ${encBadge}
       <span class="fstatus ok">✓ ${result.chunks.length} chunks</span>
-      <span class="fclose" onclick="removeFile(${corpusIdx}, this.closest('.file-entry'))">×</span>
+      <span class="fclose" onclick="removeFile(${idx}, this.closest('.file-entry'))">×</span>
     </div>
     <div class="file-entry-tags">
       <span class="tag-label">Tags</span>
       <input class="tag-input" type="text" value="${esc(autoTags)}"
-        placeholder="upbeat, dark, jazz, minimal..."
-        oninput="updateFileTags(${corpusIdx}, this.value)">
-    </div>
-  `;
+        placeholder="upbeat, dark, jazz, geometric..."
+        oninput="updateFileTags(${idx}, this.value)">
+    </div>`;
   document.getElementById('file-list').appendChild(entry);
 
-  // Update corpus count
-  let tc = 0; for (const e of CORPUS) tc += e.chunks.length;
+  let tc = 0; for (const e of CORPUS) if (e) tc += e.chunks.length;
   document.getElementById('h-corpus').textContent = tc;
   document.getElementById('m-chunks').textContent = tc;
 }
 
 function removeFile(idx, el) {
-  CORPUS[idx] = null;
-  el.remove();
-  let tc = 0;
-  for (const e of CORPUS) if (e) tc += e.chunks.length;
+  CORPUS[idx] = null; el.remove();
+  let tc = 0; for (const e of CORPUS) if (e) tc += e.chunks.length;
   document.getElementById('h-corpus').textContent = tc;
   document.getElementById('m-chunks').textContent = tc;
 }
@@ -1922,59 +1971,48 @@ function updateFileTags(idx, tagStr) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// DOWNLOAD
+// DOWNLOAD + WEIGHTS
 // ════════════════════════════════════════════════════════════════════
 function downloadOutput() {
   if (!OUTPUT.bytes) return;
   const extMap = ['.txt','.html','.bmp','.wav'];
-  const blob = new Blob([OUTPUT.bytes], { type: 'application/octet-stream' });
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = URL.createObjectURL(new Blob([OUTPUT.bytes], { type: 'application/octet-stream' }));
   a.download = 'fabula-output' + extMap[OUTPUT.fid];
-  a.click();
-  URL.revokeObjectURL(a.href);
+  a.click(); URL.revokeObjectURL(a.href);
 }
 
-// ════════════════════════════════════════════════════════════════════
-// WEIGHT EXPORT / IMPORT
-// ════════════════════════════════════════════════════════════════════
 function exportWeights() {
   if (!MODEL) { alert('No model to export.'); return; }
   const data = JSON.stringify(MODEL.serialize());
-  const blob = new Blob([data], { type: 'application/json' });
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `autoencofabulator-${TRAIN.steps}steps.fabula`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+  a.download = `autoencofabulator-v0.2-${TRAIN.steps}steps.fabula`;
+  a.click(); URL.revokeObjectURL(a.href);
 }
 
 async function importWeights(file) {
   if (!file) return;
   try {
-    const text = await file.text();
-    const data = JSON.parse(text);
+    const data = JSON.parse(await file.text());
     if (!MODEL) MODEL = new ScoreNet();
-    MODEL.load(data);
-    alert(`Weights loaded. Steps: ${data.steps}`);
-    updateTrainUI(0);
-  } catch (e) {
-    alert('Import failed: ' + e.message);
-  }
+    if (MODEL.load(data)) {
+      alert(`Weights loaded. Steps: ${data.steps}`);
+      updateTrainUI(0);
+    }
+  } catch(e) { alert('Import failed: ' + e.message); }
 }
 
 // ════════════════════════════════════════════════════════════════════
 // INIT
 // ════════════════════════════════════════════════════════════════════
 function init() {
-  // Drop zone
   const dz = document.getElementById('drop-zone');
   dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
   dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
   dz.addEventListener('drop', e => {
     e.preventDefault(); dz.classList.remove('drag-over');
-    const files = Array.from(e.dataTransfer.files);
-    files.forEach(addFile);
+    Array.from(e.dataTransfer.files).forEach(addFile);
   });
   dz.addEventListener('click', () => {
     const inp = document.createElement('input');
@@ -1983,11 +2021,7 @@ function init() {
     inp.onchange = () => Array.from(inp.files).forEach(addFile);
     inp.click();
   });
-
-  // Initial canvas
   drawLoss();
-
-  // Init model eagerly so param count shows
   MODEL = new ScoreNet();
   document.getElementById('m-params').textContent = MODEL.paramCount().toLocaleString();
 }
