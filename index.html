@@ -300,6 +300,7 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     <button class="tab" onclick="switchTab('generate')">✦ Generate</button>
     <button class="tab" onclick="switchTab('validate')">⬡ Validate</button>
     <button class="tab" onclick="switchTab('model')">◈ Model</button>
+    <button class="tab" onclick="switchTab('debug')">⚙ Debug</button>
   </div>
 
   <div class="main">
@@ -506,9 +507,54 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       </div>
     </div>
 
-  </div>
+    <!-- DEBUG -->
+    <div class="pane" id="pane-debug">
 
-  <footer>
+      <div class="panel">
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Live Console</span>
+          <div style="display:flex;gap:6px;">
+            <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);cursor:pointer;">
+              <input type="checkbox" id="debug-autoscroll" checked style="accent-color:var(--accent);">
+              auto-scroll
+            </label>
+            <button class="btn" style="padding:2px 8px;font-size:9px;" onclick="DEBUG.log=[];renderDebugLog()">Clear</button>
+          </div>
+        </div>
+        <div id="debug-console" style="
+          background:var(--void);border:1px solid var(--border);
+          height:180px;overflow-y:auto;padding:6px;
+          font-size:10px;font-family:var(--mono);line-height:1.6;
+        "></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Gradient Health</div>
+        <canvas id="grad-canvas" width="800" height="60" style="width:100%;height:60px;background:var(--panel);border:1px solid var(--border);display:block;"></canvas>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:4px;">
+          <span>Per-weight RMS grad norm · <span style="color:var(--signal)">■</span> healthy 0.001–0.5 · red=dead · yellow=exploding</span>
+          <span id="grad-val" style="color:var(--signal);">—</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Format Step Distribution</div>
+        <div id="debug-format-steps" style="font-size:11px;color:var(--text-dim);"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Optimizer State</div>
+        <div id="debug-optimizer" style="font-size:11px;color:var(--text-dim);line-height:1.9;"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Generation Journal <span style="font-size:9px;color:var(--text-muted);">(newest first · max 50)</span></div>
+        <div id="debug-journal" style="font-size:10px;overflow-x:auto;"></div>
+      </div>
+
+    </div>
+
+  </div>
     <span>Autoencofabulator v0.2 · ConsciousNode SoftWorks · Kham · Ed Interim · MIT License</span>
     <span>ScoreNet/Adam: Simulacra · AdaLN: OmniVocal · ElasticTok/SpikeVox: FPSS (Kehai) · Validation: Once Bytten · DDPM (Ho et al. 2020)</span>
   </footer>
@@ -516,6 +562,34 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 <script>
 'use strict';
+
+// ════════════════════════════════════════════════════════════════════
+// DEBUG STATE + CONSOLE INTERCEPTION
+// ════════════════════════════════════════════════════════════════════
+const DEBUG = {
+  log: [], gradNorms: [], journal: [],
+  formatSteps: { 0:0, 1:0, 2:0, 3:0 },
+};
+
+// Intercept console before anything else
+(() => {
+  const orig = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+  const colors = { log: 'var(--text-dim)', warn: 'var(--warn)', error: 'var(--danger)', info: 'var(--signal)' };
+  ['log','warn','error','info'].forEach(level => {
+    console[level] = (...args) => {
+      orig[level](...args);
+      const msg = args.map(a => {
+        if (a instanceof Error) return a.stack || a.message;
+        if (typeof a === 'object') { try { return JSON.stringify(a); } catch { return String(a); } }
+        return String(a);
+      }).join(' ');
+      DEBUG.log.push({ level, msg, ts: new Date().toLocaleTimeString() });
+      if (DEBUG.log.length > 500) DEBUG.log.shift();
+      const pane = document.getElementById('pane-debug');
+      if (pane?.classList.contains('active')) renderDebugLog();
+    };
+  });
+})();
 
 // ════════════════════════════════════════════════════════════════════
 // CONFIG
@@ -1488,7 +1562,7 @@ function validateOutput(bytes, fid, meta) {
     checks.push({ icon: '✓', ok: true, label: 'Encoding', value: `SpikeVox LIF (V_th=${CFG.SPIKEVOX_TH}, leak=${CFG.SPIKEVOX_LK}) → band-sinusoidal decode` });
   }
 
-  return { checks, verdict };
+  return { checks, verdict, entropy, rosa };
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1548,6 +1622,22 @@ async function trainingLoop() {
     loss /= activeDim;
 
     MODEL.backward(gradOut);
+
+    // Track grad norm every 10 steps for debug panel
+    if (TRAIN.steps % 10 === 0) {
+      let sq = 0, n = 0;
+      for (const l of [MODEL.l1, MODEL.l2, MODEL.l3, MODEL.l4]) {
+        for (let i = 0; i < l.gradW.length; i++) { sq += l.gradW[i]**2; n++; }
+        for (let i = 0; i < l.gradB.length; i++) { sq += l.gradB[i]**2; n++; }
+      }
+      const gn = Math.sqrt(sq / Math.max(n, 1));
+      DEBUG.gradNorms.push(gn);
+      if (DEBUG.gradNorms.length > 400) DEBUG.gradNorms.shift();
+    }
+
+    // Track per-format step distribution
+    DEBUG.formatSteps[fid] = (DEBUG.formatSteps[fid] || 0) + 1;
+
     MODEL.step();
     MODEL.zeroGrad();
 
@@ -1732,8 +1822,21 @@ async function runGeneration() {
   OUTPUT.bytes = rawBytes; OUTPUT.fid = fid; OUTPUT.meta = meta;
   renderOutput(rawBytes, fid, meta);
 
-  const { checks, verdict } = validateOutput(rawBytes, fid, meta);
+  const { checks, verdict, entropy, rosa } = validateOutput(rawBytes, fid, meta);
   renderValidation(checks, verdict);
+
+  // Log to generation journal
+  DEBUG.journal.unshift({
+    ts: new Date().toLocaleTimeString(),
+    step: TRAIN.steps,
+    fmt: FMT_NAME[fid].toUpperCase(),
+    tags: document.getElementById('gen-tags').value || '(none)',
+    entropy: entropy.toFixed(3),
+    rosa: rosa.toFixed(3),
+    verdict,
+  });
+  if (DEBUG.journal.length > 50) DEBUG.journal.pop();
+  console.log(`[GEN] ${FMT_NAME[fid].toUpperCase()} | entropy=${entropy.toFixed(3)} rosa=${rosa.toFixed(3)} verdict=${verdict} | step=${TRAIN.steps}`);
 
   document.getElementById('btn-generate').disabled = false;
   document.getElementById('btn-download').disabled = false;
@@ -1883,9 +1986,14 @@ function drawLoss() {
 // UI HELPERS
 // ════════════════════════════════════════════════════════════════════
 function switchTab(name) {
-  const names = ['train','generate','validate','model'];
+  const names = ['train','generate','validate','model','debug'];
   document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', names[i] === name));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+  if (name === 'debug') {
+    renderDebugLog();
+    drawGradNorm();
+    renderDebugStats();
+  }
 }
 
 function setStatus(cls, msg) {
@@ -1905,6 +2013,9 @@ function updateTrainUI(loss) {
   document.getElementById('m-chunks').textContent = tc;
   if (MODEL) document.getElementById('m-params').textContent = MODEL.paramCount().toLocaleString();
   drawLoss();
+  // Update debug panel if open
+  const dbgPane = document.getElementById('pane-debug');
+  if (dbgPane?.classList.contains('active')) { drawGradNorm(); renderDebugStats(); }
 }
 
 function updateSizeControls() {
@@ -2055,6 +2166,160 @@ async function importWeights(file) {
       updateTrainUI(0);
     }
   } catch(e) { alert('Import failed: ' + e.message); }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DEBUG RENDER FUNCTIONS
+// ════════════════════════════════════════════════════════════════════
+function renderDebugLog() {
+  const el = document.getElementById('debug-console');
+  if (!el) return;
+  const COLOR = { log:'var(--text-dim)', warn:'var(--warn)', error:'var(--danger)', info:'var(--signal)' };
+  const LABEL = { log:'LOG', warn:'WARN', error:'ERR', info:'INFO' };
+  el.innerHTML = DEBUG.log.slice(-200).map(e =>
+    `<div style="color:${COLOR[e.level]||'var(--text-dim)'};padding:1px 0;border-bottom:1px solid rgba(42,37,69,0.5);">` +
+    `<span style="color:var(--text-muted)">[${esc(e.ts)}]</span> ` +
+    `<span style="color:${COLOR[e.level]}">[${LABEL[e.level]||e.level}]</span> ` +
+    `${esc(e.msg)}</div>`
+  ).join('');
+  const as = document.getElementById('debug-autoscroll');
+  if (!as || as.checked) el.scrollTop = el.scrollHeight;
+}
+
+function drawGradNorm() {
+  const cvs = document.getElementById('grad-canvas');
+  if (!cvs) return;
+  const ctx = cvs.getContext('2d');
+  const W = cvs.width, H = cvs.height;
+  ctx.clearRect(0, 0, W, H);
+  const hist = DEBUG.gradNorms;
+  if (hist.length < 2) {
+    ctx.fillStyle = 'var(--text-muted)';
+    ctx.font = '10px monospace';
+    ctx.fillText('No gradient data yet — start training', 10, H/2 + 4);
+    return;
+  }
+
+  const maxG = Math.max(...hist) * 1.1 || 1;
+  // Healthy band (0.001 – 0.5)
+  const yHi  = H - clamp((0.5   / maxG) * H, 0, H);
+  const yLo  = H - clamp((0.001 / maxG) * H, 0, H);
+  ctx.fillStyle = 'rgba(45,224,165,0.08)';
+  ctx.fillRect(0, yHi, W, yLo - yHi);
+
+  // Danger zone (> 1.0)
+  const yDanger = H - clamp((1.0 / maxG) * H, 0, H);
+  ctx.fillStyle = 'rgba(255,59,110,0.05)';
+  ctx.fillRect(0, 0, W, yDanger);
+
+  // Grad norm line
+  const last = hist[hist.length - 1];
+  const lineColor = last < 0.0001 ? '#ff3b6e' : last > 1.0 ? '#f0a500' : '#2de0a5';
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < hist.length; i++) {
+    const x = (i / (hist.length - 1)) * W;
+    const y = H - clamp((hist[i] / maxG) * H, 0, H);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  const el = document.getElementById('grad-val');
+  if (el) {
+    el.textContent = last.toExponential(3);
+    el.style.color = lineColor;
+  }
+}
+
+function renderDebugStats() {
+  // Format step distribution
+  const fmtEl = document.getElementById('debug-format-steps');
+  if (fmtEl) {
+    const total = Object.values(DEBUG.formatSteps).reduce((a,b) => a+b, 0) || 1;
+    const BADGE = ['badge-txt','badge-html','badge-bmp','badge-wav'];
+    fmtEl.innerHTML = [0,1,2,3].map(fid => {
+      const steps = DEBUG.formatSteps[fid] || 0;
+      const pct   = (steps / total * 100).toFixed(1);
+      return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;">
+        <span class="fbadge ${BADGE[fid]}" style="width:44px;text-align:center;flex-shrink:0;">${FMT_NAME[fid].toUpperCase()}</span>
+        <div style="flex:1;background:var(--panel);border:1px solid var(--border);height:6px;">
+          <div style="width:${pct}%;height:100%;background:var(--accent);"></div>
+        </div>
+        <span style="font-size:10px;color:var(--text-muted);min-width:80px;text-align:right;">
+          ${steps.toLocaleString()} (${pct}%)
+        </span>
+      </div>`;
+    }).join('');
+  }
+
+  // Optimizer state
+  const optEl = document.getElementById('debug-optimizer');
+  if (optEl && MODEL && MODEL.opt) {
+    const opt = MODEL.opt;
+    // Sample momentum magnitude from first param group
+    let mMag = 0, vMag = 0;
+    const m0 = opt.m[0], v0 = opt.v[0];
+    if (m0) {
+      const n = Math.min(256, m0.length);
+      for (let i = 0; i < n; i++) { mMag += m0[i]**2; vMag += v0[i]**2; }
+      mMag = Math.sqrt(mMag/n); vMag = Math.sqrt(vMag/n);
+    }
+    const health = mMag < 1e-8 ? '⚠ momentum near-zero (cold start or reset)' :
+                   mMag > 0.5  ? '⚠ momentum high (possible instability)' :
+                   '✓ healthy';
+    optEl.innerHTML = `
+      <div>Adam step count: <span style="color:var(--accent-hi)">${opt.t.toLocaleString()}</span></div>
+      <div>Active learn rate: <span style="color:var(--accent-hi)">${opt.lr}</span></div>
+      <div>β₁=${opt.b1} · β₂=${opt.b2} · ε=${opt.eps}</div>
+      <div>Momentum RMS (sample): <span style="color:var(--signal)">${mMag.toExponential(3)}</span></div>
+      <div>Velocity RMS (sample): <span style="color:var(--signal)">${vMag.toExponential(3)}</span></div>
+      <div style="margin-top:4px;color:${health.startsWith('⚠')?'var(--warn)':'var(--signal)'};">${health}</div>
+    `;
+  } else if (optEl) {
+    optEl.innerHTML = '<div style="color:var(--text-muted);">No model loaded.</div>';
+  }
+
+  // Generation journal
+  const jEl = document.getElementById('debug-journal');
+  if (jEl) {
+    if (!DEBUG.journal.length) {
+      jEl.innerHTML = '<div style="color:var(--text-muted);font-size:11px;">No generations yet.</div>';
+    } else {
+      jEl.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:10px;">
+          <thead>
+            <tr style="color:var(--text-muted);border-bottom:1px solid var(--border);">
+              <th style="text-align:left;padding:3px 6px;">Time</th>
+              <th style="text-align:left;padding:3px 6px;">Step</th>
+              <th style="text-align:left;padding:3px 6px;">Fmt</th>
+              <th style="text-align:left;padding:3px 6px;max-width:120px;">Tags</th>
+              <th style="text-align:right;padding:3px 6px;">Entropy</th>
+              <th style="text-align:right;padding:3px 6px;">ROSA</th>
+              <th style="text-align:left;padding:3px 6px;">Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${DEBUG.journal.map(j => {
+              const eHi = parseFloat(j.entropy) > 7.0;
+              const rHi = parseFloat(j.rosa) > 0.9;
+              const vColor = j.verdict==='pass' ? 'var(--signal)' : j.verdict==='warn' ? 'var(--warn)' : 'var(--danger)';
+              const BADGE = ['badge-txt','badge-html','badge-bmp','badge-wav'];
+              const fidIdx = FMT_NAME.indexOf(j.fmt.toLowerCase());
+              return `<tr style="border-bottom:1px solid rgba(42,37,69,0.5);">
+                <td style="padding:3px 6px;color:var(--text-muted);">${esc(j.ts)}</td>
+                <td style="padding:3px 6px;">${j.step.toLocaleString()}</td>
+                <td style="padding:3px 6px;"><span class="fbadge ${BADGE[fidIdx]||''}">${esc(j.fmt)}</span></td>
+                <td style="padding:3px 6px;color:var(--text-dim);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(j.tags)}</td>
+                <td style="padding:3px 6px;text-align:right;color:${eHi?'var(--warn)':'var(--signal)'};">${j.entropy}</td>
+                <td style="padding:3px 6px;text-align:right;color:${rHi?'var(--warn)':'var(--signal)'};">${j.rosa}</td>
+                <td style="padding:3px 6px;color:${vColor};">${j.verdict.toUpperCase()}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`;
+    }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
