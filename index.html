@@ -386,6 +386,14 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             <span style="align-self:center;color:var(--text-dim);font-size:11px;">/ 200 max</span>
           </div>
         </div>
+        <div class="form-row">
+          <span class="form-label">Sampling</span>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;">
+            <input type="checkbox" id="gen-ddim" style="accent-color:var(--accent);">
+            <span style="font-size:11px;color:var(--text-dim);">Deterministic (DDIM — no sigma noise, more stable output)</span>
+          </label>
+        </div>
+
         <div class="ctrl-row" style="margin-top:10px;">
           <button class="btn btn-signal" id="btn-generate" onclick="runGeneration()">Generate</button>
         </div>
@@ -453,7 +461,41 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         </div>
       </div>
       <div class="panel">
-        <div class="panel-title">Weights (.fabula v0.2)</div>
+        <div class="panel-title">Training Hyperparameters</div>
+        <div class="form-row">
+          <span class="form-label">Learn Rate</span>
+          <input class="form-input" id="ctrl-lr" type="number" value="0.0001"
+            min="0.000001" max="0.01" step="0.00001"
+            oninput="updateLR(this.value)" style="flex:1;">
+          <span style="align-self:center;font-size:10px;color:var(--text-muted);">restart to apply</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:6px;line-height:1.7;">
+          Default 1e-4. Try 5e-4 if loss is stuck high after 50k steps. Try 1e-5 to fine-tune after 500k+ steps.
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Best Practices Guide</div>
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.9;">
+          <div style="color:var(--accent-hi);margin-bottom:4px;">Corpus</div>
+          <div>· Use 10+ files per format. More homogeneous = faster convergence.</div>
+          <div>· Tag files meaningfully — tags become the generation vocabulary.</div>
+          <div>· BMP: minimum 8×8px, 24-bit. WAV: mono preferred for v0.2.</div>
+          <div style="color:var(--accent-hi);margin:8px 0 4px;">Training milestones (TXT/HTML)</div>
+          <div>· <span style="color:var(--text)">~30k steps</span> — loss trending down, output still noise</div>
+          <div>· <span style="color:var(--text)">~200k steps</span> — occasional character clusters</div>
+          <div>· <span style="color:var(--text)">~500k steps</span> — word-like fragments, tag echoes</div>
+          <div>· <span style="color:var(--text)">~1M+ steps</span> — recognizable structure</div>
+          <div style="color:var(--accent-hi);margin:8px 0 4px;">Loss interpretation</div>
+          <div>· Jumpy loss is normal — timestep is sampled randomly each step.</div>
+          <div>· Watch the <span style="color:var(--text)">rolling average</span> (shaded region), not individual spikes.</div>
+          <div>· If average not decreasing after 50k steps → try higher LR (5e-4).</div>
+          <div style="color:var(--accent-hi);margin:8px 0 4px;">Generation</div>
+          <div>· Try <span style="color:var(--signal)">Deterministic (DDIM)</span> if output is very noisy.</div>
+          <div>· More steps (200) = cleaner output, slower generation.</div>
+          <div>· Export .fabula before closing the browser!</div>
+        </div>
+      </div>
         <div style="font-size:10px;color:var(--warn);margin-bottom:8px;">⚠ v0.2 .fabula files are not compatible with v0.1</div>
         <div class="ctrl-row">
           <button class="btn" onclick="exportWeights()">Export .fabula</button>
@@ -1075,10 +1117,12 @@ class ScoreNet {
     const gX2a   = this.ln3.backward(this.l3.backward(gX3));
 
     // SiLU ← L2 ← LN2
-    const gX2    = this.l2.backward(this.ln2.backward(siluGrad(c.x2, gX2a)));
+    // Forward: x1a → ln2 → x2ln → l2 → x2 → silu → x2a
+    // Backward: siluGrad → l2.backward → ln2.backward (l2 INSIDE, ln2 OUTSIDE)
+    const gX1a   = this.ln2.backward(this.l2.backward(siluGrad(c.x2, gX2a)));
 
     // SiLU ← AdaLN1 ← L1 ← LN1
-    const gX1c   = siluGrad(c.x1c, gX2);
+    const gX1c   = siluGrad(c.x1c, gX1a);
     const gX1    = new Float32Array(H1);
     const gShift1 = new Float32Array(H1);
     const gScale1 = new Float32Array(H1);
@@ -1204,19 +1248,20 @@ const DIFF = (() => {
     },
 
     // DDPM Algorithm 2 — direct ε-prediction form
-    reverseStep(xt, epsPred, t) {
+    // Pass ddim=true for deterministic sampling (no sigma noise)
+    reverseStep(xt, epsPred, t, ddim=false) {
       const beta   = betas[t];
       const alpha  = alphas[t];
       const ab     = alphaBar[t];
       const abPrev = alphaBar[t-1] || 1;
-      const sigma  = t > 1 ? Math.sqrt(beta * (1 - abPrev) / (1 - ab)) : 0;
+      const sigma  = (!ddim && t > 1) ? Math.sqrt(beta * (1 - abPrev) / (1 - ab)) : 0;
       const invSqrtAlpha     = 1 / Math.sqrt(alpha);
       const betaOverSqrt1mAb = beta / Math.sqrt(1 - ab);
 
       const xPrev = new Float32Array(xt.length);
       for (let i = 0; i < xt.length; i++) {
         const mean = invSqrtAlpha * (xt[i] - betaOverSqrt1mAb * epsPred[i]);
-        xPrev[i] = mean + (t > 1 ? sigma * randn() : 0);
+        xPrev[i] = mean + (sigma > 0 ? sigma * randn() : 0);
       }
       return xPrev;
     }
@@ -1576,12 +1621,14 @@ async function runGeneration() {
       `Chunk ${c+1} / ${total} (${pct}%)`;
   };
 
+  const ddim = document.getElementById('gen-ddim').checked;
+
   async function genChunk(patchR=0, patchC=0) {
     let xt = new Float32Array(CFG.CHUNK);
     for (let i = 0; i < CFG.CHUNK; i++) xt[i] = randn();
     for (let t = steps; t >= 1; t--) {
       const ep = MODEL.forward(xt, t, fid, tagIds, patchR, patchC);
-      xt = DIFF.reverseStep(xt, ep, t);
+      xt = DIFF.reverseStep(xt, ep, t, ddim);
     }
     return xt;
   }
@@ -1870,6 +1917,13 @@ function updateSizeControls() {
 // ════════════════════════════════════════════════════════════════════
 // TRAINING CONTROLS
 // ════════════════════════════════════════════════════════════════════
+function updateLR(val) {
+  const lr = parseFloat(val);
+  if (isNaN(lr) || lr <= 0) return;
+  CFG.LR = lr;
+  if (MODEL && MODEL.opt) MODEL.opt.lr = lr;
+}
+
 function startTraining() {
   if (!MODEL) MODEL = new ScoreNet();
   if (TRAIN.running) return;
