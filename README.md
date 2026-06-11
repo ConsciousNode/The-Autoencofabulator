@@ -1,6 +1,6 @@
 # The Autoencofabulator
 
-[![Version](https://img.shields.io/badge/version-0.1-7c5cfc?style=flat-square)](#changelog)
+[![Version](https://img.shields.io/badge/version-0.2.2-7c5cfc?style=flat-square)](#changelog)
 [![MIT License](https://img.shields.io/badge/license-MIT-7c5cfc?style=flat-square)](LICENSE)
 [![Xinu Compliant](https://img.shields.io/badge/xinu-compliant-3d2d8a?style=flat-square)](https://consciousnode.github.io)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-17152a?style=flat-square)](#)
