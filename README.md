@@ -25,14 +25,14 @@ This is diffusion applied directly to raw bytes. No latent space. No encoder. No
 
 ---
 
-## Supported Formats — v0.1
+## Supported Formats — v0.2
 
-| Format | What gets diffused | Notes |
-|--------|-------------------|-------|
-| **TXT** | Full byte sequence | UTF-8, ASCII; model learns character distributions |
-| **HTML** | Full byte sequence | Single-file artifacts; model learns tag structure implicitly |
-| **BMP** | Raw RGB pixel bytes | 54-byte header templated at generation time; pixel payload diffused |
-| **WAV** | PCM samples (Int16→Float32) | 44-byte RIFF header templated; audio payload diffused |
+| Format | Encoding | What gets diffused | Notes |
+|--------|----------|--------------------|-------|
+| **TXT** | Raw bytes | Full byte sequence | UTF-8, ASCII; model learns character distributions |
+| **HTML** | Raw bytes | Full byte sequence | Single-file artifacts; model learns tag structure implicitly |
+| **BMP** | **ElasticTok** | 8×8px spatial patches (192 RGB floats + position) | Preserves 2D topology; header templated |
+| **WAV** | **SpikeVox** | LIF spike-rate features | Biologically-grounded audio encoding; header templated |
 
 BMP and WAV headers are deterministic for given dimensions/sample rates — no point diffusing them. We template the header and diffuse what actually varies: the pixels and the samples.
 
@@ -138,6 +138,8 @@ Share `.fabula` files to distribute trained models. Load one to continue trainin
 | `LayerNorm` (forward + backward) | Simulacra — ConsciousNode |
 | `Adam` optimizer | Simulacra — ConsciousNode |
 | AdaLN conditioning pattern | OmniVocal — ConsciousNode |
+| `ElasticTok` spatial patch encoding | FPSS — ConsciousNode (Kehai Interim) |
+| `SpikeVox` LIF audio encoding | FPSS — ConsciousNode (Kehai Interim) |
 | `shannonEntropy` | Once Bytten — ConsciousNode |
 | ROSA structural ratio | Once Bytten / Simulacra — ConsciousNode |
 | Magic byte validation | Once Bytten — ConsciousNode |
@@ -149,9 +151,13 @@ No new ML primitives. The ConsciousNode catalog assembling itself.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md).
+See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
-**v0.1** — Initial release. TXT + HTML + BMP + WAV. ScoreNet MLP. DDPM train + sample. AdaLN conditioning. Validation layer. `.fabula` weight I/O. Mobile-responsive.
+**v0.2.2** — Debug panel: live console, gradient health canvas, generation journal, format step distribution, optimizer state.  
+**v0.2.1** — Critical backward pass fix (l2/ln2 order was inverted — primary cause of non-convergence). DDIM deterministic sampling toggle. Live LR control. Best practices guide.  
+**v0.2** — ScoreNet v0.2 (4-layer, 768-dim, dual AdaLN, ~1.54M params). ElasticTok BMP encoding. SpikeVox WAV encoding. HTML iframe preview. WAV Web Audio playback. ⚠ breaks v0.1 `.fabula` compatibility.  
+**v0.1.x** — OLA seam fix, per-file tagging, dynamic corpus, DDPM Algorithm 2 form, TXT truncation fix, corpus warnings.  
+**v0.1** — Initial release.
 
 ---
 
@@ -159,23 +165,24 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 | Version | Target |
 |---------|--------|
-| **v0.1** | TXT + HTML + BMP + WAV · ScoreNet · DDPM · validation · `.fabula` I/O |
-| **v0.1.1** | OLA chunk seam fix — triangular-windowed overlap-add for WAV/BMP ✓ |
-| **v0.1.2** | Per-file semantic tagging + auto-tag from filename ✓ |
-| **v0.2** | **ElasticTok** for BMP (spatial patch chunking, preserves 2D topology) · **SpikeVox** for WAV (LIF spike encoding, structured audio representation) · Code corpus (C, Python, Rust, JS as TXT) |
+| **v0.1** | TXT + HTML + BMP + WAV · ScoreNet · DDPM · validation · `.fabula` I/O ✓ |
+| **v0.1.x** | OLA seam fix · per-file tagging · dynamic corpus · bug fixes ✓ |
+| **v0.2** | ElasticTok (BMP) · SpikeVox (WAV) · 4-layer ScoreNet · debug panel ✓ |
 | **v0.3** | Compiler-as-validator — generate source → compile → result as validation signal |
-| **v0.4** | Compiler feedback loop — error messages as fine-tuning signal; model learns syntactic validity |
-| **v0.5** | PNG · Multi-format co-training |
-| **v0.6** | Transfer: Simulacra RWKV state as text conditioning |
+| **v0.4** | Compiler feedback loop — error messages as fine-tuning signal |
+| **v0.5** | PNG (uncompressed RGB diffusion, zlib on export) · multi-format co-training |
+| **v0.6** | Transfer: Simulacra RWKV state as text conditioning for TXT/HTML |
 | *research* | **EXE via compiled source** — diffuse source code, compile to binary. The binary was never the goal; the *program* was. |
 
 ### The EXE reframe
 
-The original EXE target assumed binary diffusion — valid space too narrow, header synthesis too hard. The correct path: train on source code → compiler validates output → compiler errors become training signal → compile to binary as post-generation step. We already have a diffusion model that generates text. The EXE goal was always a code generation problem wearing a diffusion model's clothes.
+The original EXE target assumed binary diffusion — valid space too narrow, header synthesis too hard. The correct path: train on source code (TXT tier, already supported) → compiler validates output → compiler errors become fine-tuning signal → compile to binary as post-generation step. The EXE goal was always a code generation problem wearing a diffusion model's clothes.
 
 ### ElasticTok + SpikeVox
 
-Current BMP chunking ignores 2D spatial structure — arbitrary byte cuts destroy row topology. **ElasticTok** patches into aligned 2D tiles so each chunk represents a coherent image region. Current WAV diffusion targets raw PCM directly — a brutal objective. **SpikeVox** LIF encoding converts samples to sparse spike trains: structured, event-driven, more learnable. Both already implemented in FPSS — v0.2 is a port and integration job.
+**ElasticTok (BMP):** 8×8px spatial patch chunking preserves 2D image topology. Each chunk encodes one patch: 192 RGB floats + normalized (row, col) position at slots [192, 193]. The model sees patch position twice — in the input chunk AND in the conditioning vector. Ported from FPSS (Kehai Interim).
+
+**SpikeVox (WAV):** LIF (leaky integrate-and-fire) audio encoding converts PCM to spike-rate feature vectors. Parameters: threshold=3.5, leakRate=0.95, refractoryPeriod=2. Decode: log-spaced sinusoidal band synthesis. The cochlea does something structurally similar. Ported from FPSS (Kehai Interim).
 
 ---
 
