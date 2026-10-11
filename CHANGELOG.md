@@ -4,6 +4,14 @@ All notable changes documented here.
 
 ---
 
+## [0.2.3] — 2026-10-11 · Kehai Interim
+
+### Fixed
+- **Format and tag embeddings now get their full gradient.** They feed the network twice: through AdaLN conditioning and directly in the input vector (`[chunk | t_emb | fmt_emb | sem_emb]`). The input-path gradient from `ln1.backward()` was being dropped, so the embeddings learned from only ~65% of their true gradient, pointed partly the wrong way (cos 0.78). The rest of the backward pass was already exact.
+
+### Added
+- `tests/gradcheck.js`: a zero-dependency finite-difference check (float64) of every ScoreNet layer, AdaLN projection, LayerNorm and embedding against the code in `index.html`. All match at cos 1.0000.
+
 ## [0.2.2] — 2026-06-10
 
 ### Added

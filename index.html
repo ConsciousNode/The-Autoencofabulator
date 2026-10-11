@@ -1207,12 +1207,17 @@ class ScoreNet {
     }
     const gCond1a = this.adaShift1.backward(gShift1);
     const gCond1b = this.adaScale1.backward(gScale1);
-    this.ln1.backward(this.l1.backward(gX1));
+    const gInp = this.ln1.backward(this.l1.backward(gX1));
 
     // Accumulate cond gradients, split to fmt + sem embeddings
     const gCond = new Float32Array(C);
     for (let i = 0; i < C; i++)
       gCond[i] = gCond1a[i] + gCond1b[i] + gCond2a[i] + gCond2b[i];
+    // v0.2.3: fmt/sem embeddings also sit in the INPUT vector
+    // [chunk | t_emb | fmt_emb | sem_emb]; that path's gradient used to be dropped.
+    const fmtOff = CFG.CHUNK + CFG.T_DIM, semOff = fmtOff + F;
+    for (let i = 0; i < F; i++) gCond[i]     += gInp[fmtOff + i];
+    for (let i = 0; i < S; i++) gCond[F + i] += gInp[semOff + i];
 
     // fmt embedding gradient
     for (let i = 0; i < F; i++)
