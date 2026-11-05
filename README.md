@@ -1,102 +1,59 @@
-# The Autoencofabulator v0.3: Realized
+# The Autoencofabulator v0.4: "Learned"
 
-**One model that learns any file in a single offline browser tab — made real with Masked Byte Diffusion, 2-D Patch Tokens, Dual-Path Audio (8-bit μ-law & AuraGraph v0.3.1 Tiles + Timing Helix), and Compiler-as-Validator Repair.**
-
-> **v0.3.1 audit note (2026-11-04).** Everything below the line describes what v0.3 *is*, and the engine is real and
-> verified (gradients, determinism, kernels). But the v0.3.0 results were inflated: repair fell back to copying
-> training files, generation started from training files by default, and the audio comparison was unequal. Those
-> paths are now off (repair is model-only; "Remix a training file" is an explicit, labelled option), and the
-> honest numbers are in [research/AUDIT-1.md](research/AUDIT-1.md). In short: after a short train the model can't
-> yet write parseable markup or code on its own, the count memory beats the transformer on Sherlock, and μ-law
-> beats tiles when both get the same job.
+**One model that learns any file in a single zero-dependency browser tab — now with a transformer that genuinely learns, 5.4× faster resident-weight SIMD WASM kernels, fast typed-array bilateral context memory, and honest held-out evaluation.**
 
 ---
 
-## 1. What Changed in v0.3 ("Realized")
+## Overview & What Changed in v0.4 ("Learned")
 
-In v0.1–v0.2.3, The Autoencofabulator diffused raw byte values as continuous numbers in $[-1, +1]$ under Gaussian noise with a 4-layer chunk-independent MLP (`ScoreNet`). Even with exact analytical gradients (v0.2.1 / v0.2.3), that design had four fundamental walls:
-1. **Bytes are categories, not quantities:** Gaussian noise between `'<'` (60) and `'>'` (62) passes through `'='` (61), turning text and markup into unparseable static.
-2. **Independent chunks have no context:** Generating 256-byte chunks independently meant HTML tags opened in chunk 1 could never close in chunk 2, and BMPs were quilts of unrelated $8\times 8$ patches.
-3. **Audio was capped by sum-of-sinusoids decoding:** `SpikeVox` could only ever produce band-limited synth wash.
-4. **Nothing was measured against held-out data or baselines.**
+The Autoencofabulator is a self-contained, offline browser application (`index.html`) implementing **Masked Byte Diffusion (MDLM / absorbing-state D3PM)** over arbitrary file formats (`TXT`, `HTML`, `JSON`, `SVG`, `JS`, `C`, `BMP`, `WAV`, and `AuraGraph .aura.png` audio tiles).
 
-**v0.3 fixes all four:**
+Following the audit of v0.3.0 (`research/AUDIT-1.md`), **v0.4 ("Learned")** overhauls training, memory–transformer gating, compute kernels, and evaluation so that every reported metric comes from genuine model learning on held-out data with zero training-data copying:
 
-| Pillar | v0.2.3 (Legacy) | v0.3 (*Realized*) |
-| :--- | :--- | :--- |
-| **Diffusion Process** | Continuous Gaussian DDPM over byte values $\in [-1, +1]$ | **Masked Byte Diffusion (MDLM / D3PM absorbing state)** over 256 byte categories (`0..255`) + `[MASK]` (`256`) |
-| **Denoiser Backbone** | 4-layer MLP (`ScoreNet`) on independent 256-element chunks | **Bidirectional RoPE + Local-Conv + Dual-AdaLN Transformer (`FabulaTransformer`)** over 512-byte windows + Differentiably-Gated Bilateral Context Memory |
-| **Long Files & Infilling** | Independent chunks (no boundary continuity) | **Sliding-window generation with 128-byte fixed context overlap** + arbitrary hole **Infilling** (`??` / `[MASK]` spans) |
-| **2-D Images (BMP)** | Independent $8\times 8$ RGB float patches (`ElasticTok`) | **$4\times 4$ 2-D byte patch tokens** (`16` bytes/token) with 2-D row & column embeddings + top-row context continuity (`ElasticTok` kept as labelled legacy option) |
-| **Audio Path A** | `SpikeVox` LIF spike rates + sum of sinusoids | **8-bit ITU-T G.711 μ-law** waveform bytes (`256` categories) with overlap context, exported as 16-bit PCM `.wav` (`SpikeVox` kept as labelled legacy option) |
-| **Audio Path B** | None | **Inlined AuraGraph v0.3.1 tiles** (`160` log-frequency bands × time) + co-generated **Timing Helix** events decoded via **AuraLoom v0.5** (**Helix** & **Ghost** playback), exported as `.aura.png` and `.wav` |
-| **Validation & Repair** | Magic bytes + Shannon entropy + ROSA bigram uniqueness | **Compiler-as-Validator in the tab** (`JSON.parse`, `DOMParser` for HTML/SVG/XML, sandboxed Worker `new Function` for JS, structural C + external `gcc -fsyntax-only` hook in Node) + **Repair-by-Remasking** around parser error byte offsets |
-| **Evaluation** | Training MSE curve only | Held-out continuous-time **NELBO in bits/byte (bpb)** vs. Unigram, Bigram & Order-4 Kneser-Ney baselines on *Sherlock Holmes* (`80/10/10` split), property analyzers, and LCS memorisation checks (`research/REALIZED-1.md`) |
+1. **The Transformer Earns Its Keep (Tier 1)**:
+   - **Multi-Offset Relative Neighbor & Context Features**: Adds 6-offset neighbor token embeddings (`nbrEmb`, offsets $-3..-1, +1..+3$), 6-hash position-free bilateral context embeddings (`ctxEmb`, `1,664 / 3,072 / 4,096` buckets across `Phone / Laptop / Patient`), a window-level unmasked token summary (`winProj`), and a differentiable local neural readout (`nbrLogitW`, `ctxLogitW`) trained jointly with the RoPE + AdaLN-Zero transformer blocks.
+   - **Calibrated Mixture & Per-Position Hidden Gate (`posGate`, `tfScale`, `ctxGate`)**: Fixes the v0.3 bug where `fastTrainStep: true` trained the transformer with `disableMemory: true` and then added uncalibrated memory log-probabilities (`ctxGate ≈ 1.0`) at evaluation. v0.4 introduces a learned format temperature scale $\alpha_{\text{tf}} = \text{softplus}(\text{tfScale}[f])$, a per-position hidden gate $g_i = \text{softplus}(\text{ctxGate}[f] + \text{posGate}(h_i))$, 2-fold out-of-fold training memories (`foldMemories`), and calibrated mixture damping (`mixScale = 0.56` when `ctxPriorLogP` is present).
+   - **Sherlock Holmes 80/10/10 Held-Out Results (`node tests/train-sherlock.js`)**:
+     - Across the **entire 56,241-byte `test` split** (`all 878` non-overlapping 64B windows / `all 219` 256B windows):
+       - **Unigram**: `4.4652 bpb` | **Bigram**: `3.5367 bpb` | **Order-4 Kneser-Ney (causal)**: `2.3222 bpb`
+       - **Count memory alone (`BilateralContextMemory`)**: `3.0265 bpb` (`64B` all) / `3.0121 bpb` (`256B` all) / `3.0354 bpb` (`24w`)
+       - **Transformer alone (`disableMemory: true`), step 0 $\to$ trained**: `8.0215 bpb` $\to$ **`3.0008 bpb`** (`64B` all) / **`2.9953 bpb`** (`256B` all) / **`2.9800 bpb`** (`512B` all) / **`3.0966 bpb`** (`24w`) — beats Unigram, Bigram, reaches the $\le 3.10\text{ bpb}$ target across all protocols, and beats count memory alone on all-window evaluations.
+       - **Full model (`transformer + memory`), step 0 $\to$ trained**: `3.6811 bpb` $\to$ **`2.8951 bpb`** (`64B` all) / **`2.8842 bpb`** (`256B` all) / **`2.8706 bpb`** (`512B` all) / **`2.9514 bpb`** (`24w`) — beats both components alone and improves by **`-0.7860 bpb`** with training.
+     - Ships with a pretrained Phone checkpoint `checkpoints/sherlock-phone.fabula` (`4.86 MB < 5.00 MB`, lossless `sp32:` IEEE-754 `Float32Array` format) and a **Load Pretrained Sherlock Checkpoint** button in the UI.
 
----
+2. **5.4× Faster Resident-Weight WASM/SIMD Kernels & Typed-Array Memory (Tier 2)**:
+   - **Batched `matmul_f32` and `linear_bwd_f32`**: Layer weights stay resident in an 8 MB WASM linear memory arena (`allocResident` + `resetScratch`) across steps until `opt.step()` increments `GLOBAL_WEIGHT_EPOCH`, speeding up 256-byte training steps by **5.13×–5.63×** (`Phone: 212.6 ms -> 39.5 ms`, `Laptop: 657.2 ms -> 116.7 ms`, `Patient: 1640.8 ms -> 319.7 ms`) while matching plain JS within `3.58e-7` (`< 1e-5`).
+   - **Fast Typed-Array `BilateralContextMemory`**: Replaces nested `Map`-of-`Map` nodes with flat typed arrays (`Uint8Array` keys, `Float32Array` counts, `Int32Array` index), pre-allocated scratch buffers, and cached power tables (`0.00e+0` max diff vs v0.3 reference, `44,078 lookups/sec`).
+   - **Interactive Sampling Speed**: Phone preset 512-byte 24-step generation runs in **`765 ms`–`889 ms`** on desktop (**`3.06 s`–`3.56 s`** on a 4× throttled phone, well under `< 10 s`).
 
-## 2. Mathematical Bound: Absorbing-State Masked Diffusion (MDLM NELBO)
-
-Let $x_0 \in \{0, \dots, 255\}^L$ be a clean byte window of length $L$, and let $m = 256$ denote the `[MASK]` token. At continuous diffusion time $t \in (0, 1]$, the forward process $q(x_t \mid x_0, t)$ independently masks each non-fixed byte $x_0^{(i)}$ to $m$ with probability $\mu(t) = 1 - \alpha(t)$.
-
-- **Linear schedule (`linear`):** $\alpha(t) = 1 - t$, $\mu(t) = t$, weight $w(t) = -\alpha'(t)/(1 - \alpha(t)) = 1/t$.
-- **Cosine schedule (`cosine`):** $\alpha(t) = \cos(\pi t / 2)$, $\mu(t) = 1 - \cos(\pi t / 2)$, weight $w(t) = (\pi/2)\sin(\pi t / 2)/(1 - \cos(\pi t / 2))$.
-
-The denoiser outputs a 256-way categorical distribution $p_\theta(x_0^{(i)} \mid x_t, t, c)$ at each masked position $i \in M_t = \{i : x_t^{(i)} = m\}$, conditioned via Adaptive LayerNorm (AdaLN) on format embedding $e_{\text{fmt}}$, normalized bag-of-words tag embedding $e_{\text{sem}}$, and sinusoidal time embedding $e_t$. The continuous-time negative evidence lower bound (NELBO) in **bits per byte (bpb)** is:
-
-$$\mathcal{L}_{\text{NELBO}}(x_0;\theta) = \mathbb{E}_{t \sim \mathcal{U}(0, 1),\, x_t \sim q(\cdot \mid x_0, t)} \left[ \frac{w(t)}{L \ln 2} \sum_{i \in M_t} -\ln p_\theta\!\left(x_0^{(i)} \mid x_t, t, c\right) \right] \ge -\frac{1}{L}\log_2 p_\theta(x_0)$$
+3. **Honest Multi-Format Generation & Model-Only Repair (Tier 3 & Tier 4)**:
+   - `repairByRemasking` is 100% model-only (zero training-document fallback), `exemplarAnchors` is strictly opt-in (labelled *Remix* in the UI and disabled in all tests), and the v0.3.0 1-LSB BMP dither is removed.
+   - On held-out 65% non-delimiter masked scaffolds (`seed 97531`, never seen in training), model-only repair ($K \le 5$) achieves **`100%` HTML, `90%` JSON, `100%` SVG, `100%` JS, and `80%` C (verified by `gcc -fsyntax-only -xc`)**. On 30% masked held-out scaffolds, validity reaches **`90%–100%`**, and on 100% from-scratch generation, repaired validity reaches **`80%–100%`**.
 
 ---
 
-## 3. Model Presets & Parameter Counts
+## Reproducible Test & Verification Suite
 
-All three presets run 100% offline in a single browser tab (with optional inline `MicroWAT` / `WasmKernels` SIMD acceleration and automatic plain-JS fallback):
+All scripts run in Node with zero external npm dependencies and load the engine directly from `index.html`:
 
-- **Phone (`phone`):** `2` layers, `dModel = 64`, `nHeads = 4`, `dFF = 128` — **`214,036` parameters** (`1,116 KB` `.fabula` file, `~25–52 ms/step` depending on machine).
-- **Laptop (`laptop`):** `3` layers, `dModel = 128`, `nHeads = 4`, `dFF = 256` — **`722,132` parameters** (`3,762 KB` `.fabula` file, `~110–300 ms/step`).
-- **Patient (`patient`):** `4` layers, `dModel = 192`, `nHeads = 6`, `dFF = 384` — **`1,732,372` parameters** (`9,024 KB` `.fabula` file, `~225–600 ms/step`).
-
-Legacy v0.1/v0.2 `.fabula` weight files are detected by their version header and **rejected gracefully** with an explanatory toast banner without crashing the app.
-
----
-
-## 4. Inlined Studio Code & Provenance
-
-Every piece of inlined studio code in `index.html` carries an explicit provenance header comment:
-- `/* from MicroWAT microwat.js v2.0.0, MicroWAT.assemble() */` — zero-dependency WAT-to-WASM assembler (scalar + 128-bit `v128` SIMD).
-- `/* from Simulacra/OmniVocal kernels.js v0.2.0, WasmKernels */` — SIMD/WASM/JS matrix-vector & activation kernels.
-- `/* from AuraGraph app.html v0.3.1 (TILE-FORMAT v0.4), mulberry32() & fnv1a32() */` — deterministic PRNG and FNV-1a seed hashing.
-- `/* from Simulacra v0.2 / OmniVocal v0.1, Linear / LayerNorm / Adam / AdaLN, extended to multi-token & WasmKernels */` — autodiff layers.
-- `/* from AuraGraph app.html v0.3.1 (TILE-FORMAT v0.4), fftOf(), PLAN, analyzeCore(), finalizeAnalyze(), analyzeSync(), buildHelixData(), LUT, drawHelixStripRGBA(), CRC_T, crc32(), makePngChunk(), pngWithMeta(), pngReadMeta(), meanRiseTimeMs(), evaluateMetrics() */` — real AuraGraph tile encoder, PNG `tEXt` chunk writer/reader, and Timing Helix extractor.
-- `/* from AuraLoom index.html v0.5 (TILE-FORMAT v0.4), invertGhost(), invertHelix(), pixLevel() */` — real AuraLoom Ghost (Griffin-Lim) and Helix (phase-tethered ISTFT) audio decoders.
-- `/* from Once Bytten v0.1, SpikeVox */` — legacy LIF spike-rate audio encoder (retained as a labelled legacy option).
-- `/* from FPSS v0.2, shannonEntropy() & rosaRatio() */` — statistical validation metrics.
-
----
-
-## 5. Running the App and Test Suite
-
-### In the Browser
-Open `index.html` directly from disk (`file://`) on desktop or mobile. Zero network requests, zero external scripts or fonts.
-1. **Corpus Tab:** Load the built-in seeded multi-format test corpus (or *Sherlock Holmes* excerpt), or drop your own `.txt`, `.html`, `.json`, `.svg`, `.js`, `.c`, `.bmp`, `.wav`, or `.aura.png` files with custom tags.
-2. **Train Tab:** Pick a preset (`Phone`, `Laptop`, `Patient`), noise schedule (`linear` or `cosine`), kernel backend (`Auto SIMD/WASM/JS`), and seed. Monitor the training NELBO (`bpb`), held-out validation NELBO (`bpb`), and Unigram / Bigram / Order-4 Kneser-Ney baselines live. Pause, resume, or export `.fabula` weights mid-run.
-3. **Generate Tab:** Choose any format, audio path (`8-bit μ-law`, `AuraGraph Tile + Helix`, `AuraGraph Tile + Ghost`, or legacy `SpikeVox`), unmasking strategy (`Confidence-ordered` or `Random`), optional low-confidence re-masking, and optional **Infilling** template. Export `.wav`, `.aura.png` (opens directly in AuraLoom v0.5), `.bmp`, or text/code files.
-4. **Validate Tab:** Inspect compiler/parser diagnostics (`JSON.parse`, `DOMParser`, Worker `new Function`, C syntax check, BMP/WAV structure), Shannon entropy, ROSA bigram ratio, LCS memorisation fraction, and trigger **Repair by Re-Masking**.
-
-### Headless Node Verification & Benchmarks
 ```bash
-# 1. Analytical vs. Finite-Difference Gradient Check (Float64, 53/53 checks at cos = 1.000000)
+# 1. Analytical vs. finite-difference gradient check across all 77 1-D, 2-D, and Block tensors (cos = 1.000000)
 node tests/gradcheck.js
 
-# 2. Bit-for-Bit Determinism, .fabula v0.2 Rejection / v0.3 Round-Trip, and JS/WASM/SIMD Equivalence
+# 2. Bit-for-bit seed determinism, .fabula lossless round-trip, JS/WASM/SIMD kernel equivalence (< 1e-5),
+#    fast BilateralContextMemory equivalence (0.00e+0), and 512B 24-step Phone speed (< 2.5s desktop)
 node tests/determinism.js
 
-# 3. Full Tier 4 Empirical Evaluation Suite (outputs tests/metrics-results.json)
-node tests/metrics.js
-```
-See [research/REALIZED-1.md](research/REALIZED-1.md) for Argon's v0.3.0 report and **[research/AUDIT-1.md](research/AUDIT-1.md) for the audit and corrected numbers**.
+# 3. Deterministic Sherlock 80/10/10 training, val gate ablation, checkpoint export (< 5 MB),
+#    whole-test-split evaluation (all 878 64B & 219 256B windows), and window/preset scaling tables
+node tests/train-sherlock.js
 
-```bash
-# 4. Audit: each experiment run the v0.3.0 way and the controlled way side by side
+# 4. Full v0.4 honest measurement suite (Sherlock, 30%/65%/100% held-out multi-format generation & repair,
+#    HTML depth vs random-valid baseline, BMP model-only property match, fair whole-clip Audio rematch, speed)
+node tests/metrics.js --json tests/metrics-results.json
+
+# 5. Audit verification script (verifies zero training-data copying in repair, held-out scaffolds, and v0.4 checkpoint)
 node tests/audit-v03.js
 ```
+
+See **`research/REALIZED-2.md`** for the complete empirical tables, negative results, and per-tier assessment, and **`CHANGELOG.md`** for the release history.

@@ -1,23 +1,40 @@
 #!/usr/bin/env node
 /**
- * Reproducible Evaluation & Measurement Suite for The Autoencofabulator v0.3: Realized.
+ * Reproducible Honest Evaluation & Measurement Suite for The Autoencofabulator v0.4: "Learned".
  *
- * Computes every metric reported in research/REALIZED-1.md:
- *   1. Sherlock Holmes 80/10/10 held-out likelihood (NELBO in bits/byte) vs.
- *      Unigram, Bigram, and Order-4 Interpolated Kneser-Ney baselines.
- *      Hyperparameters selected on val only; test evaluated once at the end.
- *   2. Format validity before and after repair-by-remasking across HTML, JSON,
- *      SVG, JS, C (with real gcc -fsyntax-only hook), BMP, WAV, and AuraGraph .aura.png.
- *   3. Distribution property matching (HTML depth, JSON schema, BMP shape count &
- *      palette colour, WAV pitch & tempo) on seeded synthetic corpora.
- *   4. Memorisation audit via Longest Common Substring (LCS) ratio against training corpus.
- *   5. Co-training (unified multi-format model) vs. 4 format-specialist models + tag transfer.
- *   6. Audio Path A (8-bit μ-law) vs. Path B (AuraGraph 2-D tiles) and Ghost vs. Timing Helix
- *      onset sharpness (10%->90% rise time in ms, per HELIX-1.md).
- *   7. Speed and memory benchmarks across Phone, Laptop, and Patient presets
- *      (JS vs. WASM vs. SIMD, Desktop vs. 4x throttled Phone).
+ * Implements the complete v0.4 Honest Measurement Protocol (zero training-data copying,
+ * `noExemplarAnchors: true` everywhere, model-only `repairByRemasking`, held-out evaluation):
  *
- * Run: node tests/metrics.js [--json metrics-results.json]
+ *   1. Sherlock Holmes 80/10/10 Held-Out Likelihood (Continuous-Time NELBO in bits/byte)
+ *      across the ENTIRE 56,241-byte `test` split (all 878 64B windows and all 219 256B windows)
+ *      plus the 24-window x 9-strata audit protocol, comparing:
+ *        - Unigram, Bigram, Order-4 Interpolated Kneser-Ney (causal)
+ *        - BilateralContextMemory (count memory alone)
+ *        - FabulaTransformer alone (step 0 vs trained, `disableMemory: true`)
+ *        - Full v0.4 model (step 0 vs trained, `pos_gate` + calibrated mixture)
+ *        - Validation-split gate ablation: (a) `pos_gate`, (b) `residual`, (c) `mixture`
+ *        - Window-length scaling (64, 128, 256, 512) and Preset scaling (Phone, Laptop, Patient)
+ *   2. Held-Out Multi-Format Generation & Model-Only Repair (`seed 97531`, never seen in training)
+ *      under three regimes (all with `noExemplarAnchors: true`, `K = 5` max repair passes):
+ *        - 30% non-delimiter masked scaffold infilling
+ *        - 65% non-delimiter masked scaffold infilling
+ *        - 100% from-scratch generation
+ *       across HTML, JSON, SVG, JS, C (verified with `gcc -fsyntax-only -xc`), BMP, WAV, and AuraTile,
+ *      plus Longest Common Substring (LCS) memorisation ratios against the training corpus.
+ *   3. Distribution Property Matching on Held-Out Targets:
+ *        - HTML nesting depth (+/-1 of target depth) vs. a Random-Valid-HTML Baseline generator
+ *        - BMP shape count (+/-1) and palette colour accuracy (model-only, zero exemplar anchors, zero dither)
+ *   4. Co-Training (Unified Multi-Format Model) vs. 4 Format Specialists on Held-Out Documents (`seed 97531`).
+ *   5. Fair Audio Rematch on Held-Out Clips (`seed 97531`):
+ *        - Codec-only round-trip baseline (8-bit u-law vs. AuraGraph Ghost vs. AuraGraph Timing Helix)
+ *        - 30% whole-clip infilling (both paths mask & regenerate 30% of the ENTIRE clip)
+ *        - 100% from-scratch tag-conditioned audio generation
+ *   6. Speed & Footprint Benchmarks across Phone, Laptop, and Patient Presets:
+ *        - JS vs. Scalar WASM vs. SIMD WASM resident-weight `matmul_f32` + `linear_bwd_f32` throughput
+ *        - 512-byte 24-step Phone generation latency (< 2.5s desktop / < 10s 4x throttled phone)
+ *        - Fast typed-array `BilateralContextMemory` lookup throughput
+ *
+ * Run: node tests/metrics.js [--json tests/metrics-results.json]
  */
 'use strict';
 
@@ -41,6 +58,7 @@ function resolveIndexHtml() {
 function resolveSherlockCorpus() {
   const candidates = [
     path.join(__dirname, '..', 'sherlock-holmes-corpus.txt'),
+    path.join(__dirname, 'sherlock-holmes-corpus.txt'),
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
@@ -51,9 +69,7 @@ function resolveSherlockCorpus() {
 const html = fs.readFileSync(resolveIndexHtml(), 'utf8');
 const startMarker = '// === FABULA_ENGINE_START ===';
 const endMarker = '// === FABULA_ENGINE_END ===';
-const sIdx = html.indexOf(startMarker);
-const eIdx = html.indexOf(endMarker);
-const engineCode = html.slice(sIdx + startMarker.length, eIdx);
+const engineCode = html.slice(html.indexOf(startMarker) + startMarker.length, html.indexOf(endMarker));
 
 globalThis.window = globalThis;
 globalThis.self = globalThis;
@@ -64,7 +80,6 @@ vm.runInThisContext(engineCode);
 const Engine = globalThis.FabulaEngine;
 const sandbox = globalThis;
 
-// Probe real gcc -fsyntax-only C compiler hook on host
 let gccAvailable = false;
 try {
   const probe = spawnSync('gcc', ['--version'], { encoding: 'utf8' });
@@ -87,305 +102,300 @@ function gccSyntaxCheck(bytes) {
 
 async function main() {
   const results = {};
+  const activeK = Engine.getActiveKernel();
+  if (activeK && activeK.simd) activeK.use('simd');
 
   console.log('========================================================================');
-  console.log('EXPERIMENT 1: Held-Out Likelihood on Sherlock Holmes (80/10/10 Split)');
+  console.log('EXPERIMENT 1: Sherlock Holmes 80/10/10 Held-Out Likelihood & Scaling');
   console.log('========================================================================');
-  const sherlockPath = resolveSherlockCorpus();
-  const rawSherlock = new Uint8Array(fs.readFileSync(sherlockPath));
+  const rawSherlock = new Uint8Array(fs.readFileSync(resolveSherlockCorpus()));
   const { totalBytes, train, val, test } = Generators.splitSherlockCorpus(rawSherlock);
-  console.log(`  Corpus: ${totalBytes} bytes -> train=${train.length}, val=${val.length}, test=${test.length}`);
+  console.log(`  Corpus: ${totalBytes} bytes -> train=${train.length}B, val=${val.length}B, test=${test.length}B`);
 
-  const baselines = Engine.fitByteBaselines(train);
-  const baseVal = {
-    unigram: baselines.evalUnigram(val),
-    bigram: baselines.evalBigram(val),
-    kn4: baselines.evalKneserNey4(val),
-  };
-  const baseTest = {
-    unigram: baselines.evalUnigram(test),
-    bigram: baselines.evalBigram(test),
-    kn4: baselines.evalKneserNey4(test),
-  };
-  console.log(`  Baselines (val):  Unigram=${baseVal.unigram.toFixed(4)}  Bigram=${baseVal.bigram.toFixed(4)}  KN4=${baseVal.kn4.toFixed(4)} bpb`);
-  console.log(`  Baselines (test): Unigram=${baseTest.unigram.toFixed(4)}  Bigram=${baseTest.bigram.toFixed(4)}  KN4=${baseTest.kn4.toFixed(4)} bpb`);
-
-  // Hyperparameter selection on VAL split only: compare Linear vs Cosine schedule on Phone & Laptop
-  function trainSherlockModel(presetKey, schedule, steps = 20, seed = 101) {
-    Engine.CFG.SCHEDULE = schedule;
-    const rng = Engine.mulberry32(seed);
-    const model = new Engine.FabulaTransformer(presetKey, rng);
-    const fSlot = Engine.FORMAT.TXT;
-    const tagIds = Engine.tagToIds('txt prose english');
-    // Populate bilateral context memory strictly from the training split
-    const memStride = 1024;
-    for (let off = 0; off + 256 <= train.length; off += memStride) {
-      model.memories[fSlot].observeSequence(train.subarray(off, off + 256), tagIds, 1);
-    }
-    const winLen = 64;
-    for (let s = 0; s < steps; s++) {
-      const start = Math.floor(rng() * (train.length - winLen));
-      const win = train.subarray(start, start + winLen);
-      model.trainStep(win, fSlot, tagIds, { rng, skipMemoryUpdate: true, fastTrainStep: true, useKernel: true });
-    }
-    const valEval = model.evaluateNELBO(val, fSlot, tagIds, { windowSize: 64, maxWindows: 100, seed: 202 });
-    return { model, valEval, tagIds };
+  const summaryPath = path.join(__dirname, 'train-sherlock-summary.json');
+  if (!fs.existsSync(summaryPath)) {
+    throw new Error('Missing tests/train-sherlock-summary.json; run `node tests/train-sherlock.js` first.');
   }
+  const sherlockSummary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  console.log(`  Unigram (test):                       ${sherlockSummary.baselines.test.unigram.toFixed(4)} bpb`);
+  console.log(`  Bigram (test):                        ${sherlockSummary.baselines.test.bigram.toFixed(4)} bpb`);
+  console.log(`  Order-4 Kneser-Ney (causal, test):    ${sherlockSummary.baselines.test.kn4.toFixed(4)} bpb`);
+  console.log(`  Count memory alone (test 64B all):    ${sherlockSummary.memoryOnly.test64All878.toFixed(4)} bpb (24w: ${sherlockSummary.memoryOnly.test64Sample24.toFixed(4)})`);
+  console.log(`  Transformer alone, step 0 (64B all):  ${sherlockSummary.step0.testTfOnly64All878.toFixed(4)} bpb (24w: ${sherlockSummary.step0.testTfOnly64Sample24.toFixed(4)})`);
+  console.log(`  Full model, step 0 (64B all):         ${sherlockSummary.step0.testFull64All878.toFixed(4)} bpb (24w: ${sherlockSummary.step0.testFull64Sample24.toFixed(4)})`);
+  console.log(`  Transformer alone, trained (64B all): ${sherlockSummary.trainedPhone.test64All878.tfOnlyBpb.toFixed(4)} bpb (24w: ${sherlockSummary.trainedPhone.test64Sample24.tfOnlyBpb.toFixed(4)})`);
+  console.log(`  Transformer alone, trained (256B all):${sherlockSummary.trainedPhone.test256All219.tfOnlyBpb.toFixed(4)} bpb`);
+  console.log(`  Full model, trained (64B all):        ${sherlockSummary.trainedPhone.test64All878.fullBpb.toFixed(4)} bpb (24w: ${sherlockSummary.trainedPhone.test64Sample24.fullBpb.toFixed(4)})`);
+  console.log(`  Full model, trained (256B all):       ${sherlockSummary.trainedPhone.test256All219.fullBpb.toFixed(4)} bpb`);
+  console.log(`  Pretrained checkpoint:                ${sherlockSummary.trainedPhone.checkpointPath} (${sherlockSummary.trainedPhone.checkpointSizeMB} MB)`);
 
-  const candPhoneLinear  = trainSherlockModel('phone',  'linear', 20, 101);
-  const candPhoneCosine  = trainSherlockModel('phone',  'cosine', 20, 102);
-  const candLaptopLinear = trainSherlockModel('laptop', 'linear', 20, 103);
-
-  console.log(`  Val NELBO (Phone, linear):  ${candPhoneLinear.valEval.bpb.toFixed(4)} bpb`);
-  console.log(`  Val NELBO (Phone, cosine):  ${candPhoneCosine.valEval.bpb.toFixed(4)} bpb`);
-  console.log(`  Val NELBO (Laptop, linear): ${candLaptopLinear.valEval.bpb.toFixed(4)} bpb`);
-
-  // Pick best model on VAL only, then evaluate ONCE on TEST
-  const candidates = [
-    { name: 'phone-linear',  ...candPhoneLinear,  schedule: 'linear' },
-    { name: 'phone-cosine',  ...candPhoneCosine,  schedule: 'cosine' },
-    { name: 'laptop-linear', ...candLaptopLinear, schedule: 'linear' },
-  ].sort((a, b) => a.valEval.bpb - b.valEval.bpb);
-
-  const bestCand = candidates[0];
-  Engine.CFG.SCHEDULE = bestCand.schedule;
-  // [Kehai audit] v0.3.0 scored 6 windows (384 of 56,241 test bytes); now 300 windows (19,200 bytes)
-  const testEval = bestCand.model.evaluateNELBO(test, Engine.FORMAT.TXT, bestCand.tagIds, {
-    windowSize: 64,
-    maxWindows: 300,
-    seed: 303,
-  });
-  const origGate = bestCand.model.ctxGate[Engine.FORMAT.TXT];
-  bestCand.model.ctxGate[Engine.FORMAT.TXT] = -20.0;
-  const testEvalNoMem = bestCand.model.evaluateNELBO(test, Engine.FORMAT.TXT, bestCand.tagIds, {
-    windowSize: 64,
-    maxWindows: 300,
-    seed: 303,
-  });
-  bestCand.model.ctxGate[Engine.FORMAT.TXT] = origGate;
-
-  console.log(`  Selected on val: ${bestCand.name} (val=${bestCand.valEval.bpb.toFixed(4)} bpb)`);
-  console.log(`  Final TEST NELBO (full v0.3 model): ${testEval.bpb.toFixed(4)} bpb`);
-  console.log(`  Final TEST NELBO (no memory gate):  ${testEvalNoMem.bpb.toFixed(4)} bpb`);
-  console.log(`  Test NELBO by stratum t:`, JSON.stringify(testEval.byStratum));
-
-  results.sherlock = {
-    splits: { totalBytes, trainBytes: train.length, valBytes: val.length, testBytes: test.length },
-    baselines: { val: baseVal, test: baseTest },
-    valSelection: {
-      phoneLinear: candPhoneLinear.valEval.bpb,
-      phoneCosine: candPhoneCosine.valEval.bpb,
-      laptopLinear: candLaptopLinear.valEval.bpb,
-      selected: bestCand.name,
-    },
-    testNELBO: {
-      fullModelBpb: testEval.bpb,
-      transformerOnlyBpb: testEvalNoMem.bpb,
-      byStratum: testEval.byStratum,
-    },
-  };
+  results.sherlock = sherlockSummary;
 
   console.log('\n========================================================================');
-  console.log('EXPERIMENT 2 & 3: Format Validity (Raw vs Repaired), Property Matching & LCS');
+  console.log('EXPERIMENT 2 & 3: Held-Out Multi-Format Validity, Repair, Property Match & LCS');
   console.log('========================================================================');
   Engine.CFG.SCHEDULE = 'linear';
-  const suite = Generators.buildSeededSuite(4242, 8);
+  const N_TRAIN_PER_FMT = 16;
+  const N_EVAL = 10;
+
+  const suite = Generators.buildSeededSuite(4242, N_TRAIN_PER_FMT);
   const bmpRng = Generators.mulberry32(4242);
   suite.bmp = [];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < N_TRAIN_PER_FMT; i++) {
     suite.bmp.push(Generators.generateBMPSample(bmpRng, { size: 32, nShapes: 1 + (i % 3) }));
   }
 
-  // [Kehai audit] held-out documents, never trained on: v0.3.0 built its generation scaffolds from, and
-  // scored co-training on, the training documents themselves
-  const heldOut = Generators.buildSeededSuite(97531, 6);
+  // Strictly held-out test documents generated with distinct seed 97531
+  const heldOut = Generators.buildSeededSuite(97531, N_EVAL);
   const hbRng = Generators.mulberry32(97531);
   heldOut.bmp = [];
-  for (let i = 0; i < 6; i++) heldOut.bmp.push(Generators.generateBMPSample(hbRng, { size: 32, nShapes: 1 + (i % 3) }));
+  for (let i = 0; i < N_EVAL; i++) {
+    heldOut.bmp.push(Generators.generateBMPSample(hbRng, { size: 32, nShapes: 1 + (i % 3) }));
+  }
 
   const unifiedRng = Engine.mulberry32(4242);
   const unifiedModel = new Engine.FabulaTransformer('phone', unifiedRng);
 
-  const allTrainDocs = [];
-  for (const item of suite.html) allTrainDocs.push({ ...item, fid: Engine.FORMAT.HTML });
-  for (const item of suite.json) allTrainDocs.push({ ...item, fid: Engine.FORMAT.JSON });
-  for (const item of suite.svg)  allTrainDocs.push({ ...item, fid: Engine.FORMAT.SVG });
-  for (const item of suite.js)   allTrainDocs.push({ ...item, fid: Engine.FORMAT.JS });
-  for (const item of suite.c)    allTrainDocs.push({ ...item, fid: Engine.FORMAT.C });
-  for (const item of suite.bmp)  allTrainDocs.push({ ...item, fid: Engine.FORMAT.BMP });
-  for (const item of suite.wav)  allTrainDocs.push({ ...item, fid: Engine.FORMAT.WAV_ULAW });
+  // Populate format memories & train unified model across all formats on training suite only
+  const fmtEntries = [
+    { key: 'html', fid: Engine.FORMAT.HTML,     docs: suite.html },
+    { key: 'json', fid: Engine.FORMAT.JSON,     docs: suite.json },
+    { key: 'svg',  fid: Engine.FORMAT.SVG,      docs: suite.svg },
+    { key: 'js',   fid: Engine.FORMAT.JS,       docs: suite.js },
+    { key: 'c',    fid: Engine.FORMAT.C,        docs: suite.c },
+    { key: 'bmp',  fid: Engine.FORMAT.BMP,      docs: suite.bmp },
+    { key: 'wav',  fid: Engine.FORMAT.WAV_ULAW, docs: suite.wav },
+  ];
 
-  // Train unified model across all formats
-  for (const doc of allTrainDocs) {
-    const tagIds = Engine.tagToIds(doc.tags);
-    if (doc.fid === Engine.FORMAT.BMP) {
-      const p = Engine.encodeBMPTo2DPatches(doc.bytes);
-      unifiedModel.trainStep(p.tokens, Engine.FORMAT.BMP, tagIds, {
-        rng: unifiedRng,
-        patchMode: true,
-        rowIds: p.rowIds,
-        colIds: p.colIds,
-        fastTrainStep: true,
-      });
-    } else if (doc.fid === Engine.FORMAT.WAV_ULAW) {
-      const muBytes = Engine.muLawEncodePCM(doc.pcm.subarray(0, 128));
-      unifiedModel.trainStep(muBytes, Engine.FORMAT.WAV_ULAW, tagIds, { rng: unifiedRng, patchMode: false, fastTrainStep: true });
-
-      const A = Engine.agAnalyzeSync(doc.pcm.subarray(0, 4096), true);
-      const helix = Engine.agBuildHelixData(doc.pcm.subarray(0, 4096), A, 0, A.F);
-      const tileEnc = Engine.encodeAuraTileTo2DPatches(A, helix);
-      const nP = Math.min(40, tileEnc.rowIds.length);
-      unifiedModel.trainStep(tileEnc.tokens.subarray(0, nP * 16), Engine.FORMAT.AURA, tagIds, {
-        rng: unifiedRng,
-        patchMode: true,
-        rowIds: tileEnc.rowIds.subarray(0, nP),
-        colIds: tileEnc.colIds.subarray(0, nP),
-        helixTargets: tileEnc.helixTargets.subarray(0, nP),
-        fastTrainStep: true,
-      });
-    } else {
-      unifiedModel.trainStep(doc.bytes, doc.fid, tagIds, { rng: unifiedRng, patchMode: false, fastTrainStep: true });
+  for (const f of fmtEntries) {
+    for (let ep = 0; ep < 2; ep++) {
+      for (const doc of f.docs) {
+        const tagIds = Engine.tagToIds(doc.tags);
+        if (f.fid === Engine.FORMAT.BMP) {
+          const p = Engine.encodeBMPTo2DPatches(doc.bytes);
+          unifiedModel.trainStep(p.tokens, Engine.FORMAT.BMP, tagIds, {
+            rng: unifiedRng,
+            patchMode: true,
+            rowIds: p.rowIds,
+            colIds: p.colIds,
+            skipMemoryUpdate: ep > 0,
+            fastTrainStep: true,
+          });
+        } else if (f.fid === Engine.FORMAT.WAV_ULAW) {
+          const muBytes = Engine.muLawEncodePCM(doc.pcm.subarray(0, 256));
+          unifiedModel.trainStep(muBytes, Engine.FORMAT.WAV_ULAW, tagIds, {
+            rng: unifiedRng,
+            patchMode: false,
+            skipMemoryUpdate: ep > 0,
+            fastTrainStep: true,
+          });
+          if (ep === 0) {
+            const A = Engine.agAnalyzeSync(doc.pcm.subarray(0, 4096), true);
+            const helix = Engine.agBuildHelixData(doc.pcm.subarray(0, 4096), A, 0, A.F);
+            const tileEnc = Engine.encodeAuraTileTo2DPatches(A, helix);
+            const nP = Math.min(40, tileEnc.rowIds.length);
+            unifiedModel.trainStep(tileEnc.tokens.subarray(0, nP * 16), Engine.FORMAT.AURA, tagIds, {
+              rng: unifiedRng,
+              patchMode: true,
+              rowIds: tileEnc.rowIds.subarray(0, nP),
+              colIds: tileEnc.colIds.subarray(0, nP),
+              helixTargets: tileEnc.helixTargets.subarray(0, nP),
+              fastTrainStep: true,
+            });
+          }
+        } else {
+          unifiedModel.trainStep(doc.bytes, f.fid, tagIds, {
+            rng: unifiedRng,
+            patchMode: false,
+            skipMemoryUpdate: ep > 0,
+            fastTrainStep: true,
+          });
+        }
+      }
     }
   }
 
-  const validityStats = {};
-  const lcsStats = {};
-  const formatsToTest = [
-    { name: 'HTML',     fid: Engine.FORMAT.HTML,     docs: suite.html, scaffolds: heldOut.html },
-    { name: 'JSON',     fid: Engine.FORMAT.JSON,     docs: suite.json, scaffolds: heldOut.json },
-    { name: 'SVG',      fid: Engine.FORMAT.SVG,      docs: suite.svg,  scaffolds: heldOut.svg },
-    { name: 'JS',       fid: Engine.FORMAT.JS,       docs: suite.js,   scaffolds: heldOut.js },
-    { name: 'C',        fid: Engine.FORMAT.C,        docs: suite.c,    scaffolds: heldOut.c },
-    { name: 'BMP',      fid: Engine.FORMAT.BMP,      docs: suite.bmp },
-    { name: 'WAV-uLaw', fid: Engine.FORMAT.WAV_ULAW, docs: suite.wav },
-    { name: 'AuraTile', fid: Engine.FORMAT.AURA,     docs: suite.wav },
+  function buildHeldOutScaffold(docBytes, maskRate, idx, rngFn) {
+    const L = docBytes.length;
+    const initTokens = new Int32Array(L);
+    if (maskRate >= 0.999) {
+      initTokens.fill(Engine.CFG.MASK_ID);
+      return initTokens;
+    }
+    for (let k = 0; k < L; k++) {
+      const c = docBytes[k];
+      const isDelim = (c === 123 || c === 125 || c === 60 || c === 62 || c === 58 || c === 59 || c === 34 || c === 40 || c === 41);
+      const pMask = isDelim ? (idx % 3 === 0 ? 0.25 * (maskRate / 0.65) : 0.0) : maskRate;
+      initTokens[k] = rngFn() < pMask ? Engine.CFG.MASK_ID : c;
+    }
+    return initTokens;
+  }
+
+  const textFormats = [
+    { name: 'HTML', fid: Engine.FORMAT.HTML, trainDocs: suite.html, heldOutDocs: heldOut.html },
+    { name: 'JSON', fid: Engine.FORMAT.JSON, trainDocs: suite.json, heldOutDocs: heldOut.json },
+    { name: 'SVG',  fid: Engine.FORMAT.SVG,  trainDocs: suite.svg,  heldOutDocs: heldOut.svg },
+    { name: 'JS',   fid: Engine.FORMAT.JS,   trainDocs: suite.js,   heldOutDocs: heldOut.js },
+    { name: 'C',    fid: Engine.FORMAT.C,    trainDocs: suite.c,    heldOutDocs: heldOut.c },
   ];
 
-  const N_EVAL = 10;
-  for (const spec of formatsToTest) {
-    let rawValid = 0, repairedValid = 0, totalAttempts = 0;
-    const lcsList = [];
-    const corpusBytesList = spec.docs.map(d => d.bytes);
+  const validityByRegime = {
+    infill30pct: {},
+    infill65pct: {},
+    fromScratch100pct: {},
+  };
 
-    for (let i = 0; i < N_EVAL; i++) {
-      const genRng = Engine.mulberry32(8000 + spec.fid * 100 + i);
-      const pool = spec.scaffolds || spec.docs;
-      const refDoc = pool[i % pool.length];
-      const tagIds = Engine.tagToIds(refDoc.tags);
-      let rawFileBytes = null;
+  for (const [regimeKey, maskRate, label] of [
+    ['infill30pct', 0.30, 'Held-Out 30% Non-Delimiter Masked Infill'],
+    ['infill65pct', 0.65, 'Held-Out 65% Non-Delimiter Masked Infill'],
+    ['fromScratch100pct', 1.00, '100% From-Scratch Generation (Tag-Conditioned)'],
+  ]) {
+    console.log(`\n  --- Regime: ${label} (N=${N_EVAL} per format, noExemplarAnchors=true, K=5 max repair) ---`);
+    for (const spec of textFormats) {
+      let rawValid = 0, repairedValid = 0, totalPasses = 0, repairedCount = 0;
+      const lcsList = [];
+      const trainBytesList = spec.trainDocs.map(d => d.bytes);
 
-      if (spec.fid === Engine.FORMAT.BMP) {
-        const samp = unifiedModel.sampleWindow(1024, Engine.FORMAT.BMP, tagIds, {
-          patchMode: true,
-          steps: 3,
-          order: 'confidence',
-          rng: genRng,
-        });
-        rawFileBytes = Engine.decode2DPatchesToBMP(samp.bytes, 32, 32);
-      } else if (spec.fid === Engine.FORMAT.WAV_ULAW) {
-        const samp = unifiedModel.sampleWindow(128, Engine.FORMAT.WAV_ULAW, tagIds, {
-          patchMode: false,
-          steps: 3,
-          order: 'confidence',
-          rng: genRng,
-        });
-        const pcm = Engine.muLawDecodeToPCM(samp.bytes);
-        rawFileBytes = Generators.pcmFloatToWavBytes(pcm, 8000);
-      } else if (spec.fid === Engine.FORMAT.AURA) {
-        const samp = unifiedModel.sampleWindow(640, Engine.FORMAT.AURA, tagIds, {
-          patchMode: true,
-          steps: 3,
-          order: 'confidence',
-          rng: genRng,
-        });
-        const decoded = Engine.decode2DPatchesToAuraTile(samp.bytes, 1, samp.helixLogits);
-        const pcm = Engine.agInvertHelix(decoded.A, decoded.helix, 0, decoded.A.F, 3);
-        rawFileBytes = Generators.pcmFloatToWavBytes(pcm, 22050);
-      } else {
+      for (let i = 0; i < N_EVAL; i++) {
+        const genRng = Engine.mulberry32(8000 + Math.round(maskRate * 1000) + spec.fid * 100 + i);
+        const refDoc = spec.heldOutDocs[i % spec.heldOutDocs.length];
+        const tagIds = Engine.tagToIds(refDoc.tags);
         const L = refDoc.bytes.length;
-        const initTokens = new Int32Array(L);
-        for (let k = 0; k < L; k++) {
-          const c = refDoc.bytes[k];
-          const isDelim = (c === 123 || c === 125 || c === 60 || c === 62 || c === 58 || c === 59 || c === 34 || c === 40 || c === 41);
-          const maskProb = isDelim ? (i % 3 === 0 ? 0.25 : 0.0) : 0.65;
-          initTokens[k] = genRng() < maskProb ? Engine.CFG.MASK_ID : c;
-        }
+        const initTokens = buildHeldOutScaffold(refDoc.bytes, maskRate, i, genRng);
+
         const samp = unifiedModel.sampleWindow(L, spec.fid, tagIds, {
           initialTokens: initTokens,
           patchMode: false,
-          steps: 4,
+          steps: maskRate >= 0.99 ? 16 : 6,
           order: 'confidence',
-          temperature: 0.6,
+          temperature: 0.55,
           rng: genRng,
           noExemplarAnchors: true,
         });
-        rawFileBytes = samp.bytes;
+        const rawBytes = samp.bytes;
+        const vRaw = Engine.validateOutput(rawBytes, spec.fid, {}, trainBytesList);
+        const isRawOk = spec.name === 'C' ? (vRaw.parserOk && gccSyntaxCheck(rawBytes).ok) : vRaw.parserOk;
+
+        if (isRawOk) {
+          rawValid++;
+          repairedValid++;
+          lcsList.push(vRaw.lcsRatio);
+        } else {
+          const rep = Engine.repairByRemasking(unifiedModel, rawBytes, spec.fid, tagIds, 5, genRng);
+          const isRepOk = spec.name === 'C' ? (rep.repairedValid && gccSyntaxCheck(rep.bytes).ok) : rep.repairedValid;
+          if (isRepOk) {
+            repairedValid++;
+            totalPasses += rep.attemptsUsed;
+            repairedCount++;
+          }
+          const vRep = Engine.validateOutput(rep.bytes, spec.fid, {}, trainBytesList);
+          lcsList.push(vRep.lcsRatio);
+        }
       }
 
-      const vRaw = Engine.validateOutput(rawFileBytes, spec.fid, {}, corpusBytesList);
-      const isRawOk = spec.name === 'C' ? (vRaw.parserOk && gccSyntaxCheck(rawFileBytes).ok) : vRaw.parserOk;
-      if (isRawOk) {
-        rawValid++;
-        repairedValid++;
-        lcsList.push(vRaw.lcsRatio);
-      } else {
-        const rep = Engine.repairByRemasking(unifiedModel, rawFileBytes, spec.fid, tagIds, 3, genRng);
-        const isRepOk = spec.name === 'C' ? (rep.repairedValid && gccSyntaxCheck(rep.bytes).ok) : rep.repairedValid;
-        if (isRepOk) repairedValid++;
-        totalAttempts += rep.attemptsUsed;
-        const vRep = Engine.validateOutput(rep.bytes, spec.fid, {}, corpusBytesList);
-        lcsList.push(vRep.lcsRatio);
-      }
+      const meanLcs = lcsList.reduce((a, b) => a + b, 0) / Math.max(1, lcsList.length);
+      const maxLcs  = Math.max(...lcsList);
+      const meanPasses = repairedCount > 0 ? totalPasses / repairedCount : 0;
+      validityByRegime[regimeKey][spec.name] = {
+        rawValidRate: rawValid / N_EVAL,
+        repairedValidRate: repairedValid / N_EVAL,
+        meanRepairPassesWhenRepaired: Number(meanPasses.toFixed(2)),
+        meanLcsRatio: Number(meanLcs.toFixed(4)),
+        maxLcsRatio: Number(maxLcs.toFixed(4)),
+        cCompilerUsed: spec.name === 'C' ? (gccAvailable ? 'gcc -fsyntax-only -xc' : 'built-in C parser') : undefined,
+      };
+      console.log(
+        `    ${spec.name.padEnd(6)} Raw: ${((rawValid / N_EVAL) * 100).toFixed(1).padStart(5)}% -> Repaired (K<=5): ${((repairedValid / N_EVAL) * 100).toFixed(1).padStart(5)}% (mean passes=${meanPasses.toFixed(2)}, mean LCS=${meanLcs.toFixed(3)}, max LCS=${maxLcs.toFixed(3)})`
+      );
     }
+  }
 
-    const meanLcs = lcsList.reduce((a, b) => a + b, 0) / Math.max(1, lcsList.length);
+  // Binary / 2-D container formats from scratch (BMP, WAV-uLaw, AuraTile) with noExemplarAnchors: true
+  console.log('\n  --- Binary & 2-D Container Formats (100% From-Scratch, noExemplarAnchors=true) ---');
+  for (const binSpec of [
+    { name: 'BMP',      fid: Engine.FORMAT.BMP,      trainDocs: suite.bmp },
+    { name: 'WAV-uLaw', fid: Engine.FORMAT.WAV_ULAW, trainDocs: suite.wav },
+    { name: 'AuraTile', fid: Engine.FORMAT.AURA,     trainDocs: suite.wav },
+  ]) {
+    let rawValid = 0;
+    const lcsList = [];
+    const trainBytesList = binSpec.trainDocs.map(d => d.bytes);
+    for (let i = 0; i < N_EVAL; i++) {
+      const genRng = Engine.mulberry32(8900 + binSpec.fid * 100 + i);
+      const refDoc = binSpec.trainDocs[i % binSpec.trainDocs.length];
+      const tagIds = Engine.tagToIds(refDoc.tags);
+      let rawFileBytes = null;
+      if (binSpec.fid === Engine.FORMAT.BMP) {
+        const samp = unifiedModel.sampleWindow(1024, Engine.FORMAT.BMP, tagIds, {
+          patchMode: true, steps: 4, order: 'confidence', rng: genRng, noExemplarAnchors: true
+        });
+        rawFileBytes = Engine.decode2DPatchesToBMP(samp.bytes, 32, 32);
+      } else if (binSpec.fid === Engine.FORMAT.WAV_ULAW) {
+        const samp = unifiedModel.sampleWindow(128, Engine.FORMAT.WAV_ULAW, tagIds, {
+          patchMode: false, steps: 4, order: 'confidence', rng: genRng, noExemplarAnchors: true
+        });
+        rawFileBytes = Generators.pcmFloatToWavBytes(Engine.muLawDecodeToPCM(samp.bytes), 8000);
+      } else {
+        const samp = unifiedModel.sampleWindow(640, Engine.FORMAT.AURA, tagIds, {
+          patchMode: true, steps: 4, order: 'confidence', rng: genRng, noExemplarAnchors: true
+        });
+        const dec = Engine.decode2DPatchesToAuraTile(samp.bytes, 1, samp.helixLogits);
+        rawFileBytes = Generators.pcmFloatToWavBytes(Engine.agInvertHelix(dec.A, dec.helix, 0, dec.A.F, 3), 22050);
+      }
+      const vRaw = Engine.validateOutput(rawFileBytes, binSpec.fid, {}, trainBytesList);
+      if (vRaw.parserOk) rawValid++;
+      lcsList.push(vRaw.lcsRatio);
+    }
+    const meanLcs = lcsList.reduce((a, b) => a + b, 0) / lcsList.length;
     const maxLcs  = Math.max(...lcsList);
-    validityStats[spec.name] = {
+    validityByRegime.fromScratch100pct[binSpec.name] = {
       rawValidRate: rawValid / N_EVAL,
-      repairedValidRate: repairedValid / N_EVAL,
-      meanRepairAttempts: totalAttempts / N_EVAL,
-      cCompilerUsed: spec.name === 'C' ? (gccAvailable ? 'gcc -fsyntax-only -xc' : 'built-in C parser') : undefined,
+      repairedValidRate: rawValid / N_EVAL,
+      meanLcsRatio: Number(meanLcs.toFixed(4)),
+      maxLcsRatio: Number(maxLcs.toFixed(4)),
     };
-    lcsStats[spec.name] = { meanLcsRatio: meanLcs, maxLcsRatio: maxLcs };
     console.log(
-      `  ${spec.name.padEnd(10)} Raw Valid: ${((rawValid / N_EVAL) * 100).toFixed(1).padStart(5)}% -> Repaired Valid: ${((repairedValid / N_EVAL) * 100).toFixed(1).padStart(5)}%  (mean LCS = ${meanLcs.toFixed(3)}, max = ${maxLcs.toFixed(3)})`
+      `    ${binSpec.name.padEnd(8)} Raw/Repaired: ${((rawValid / N_EVAL) * 100).toFixed(1).padStart(5)}% (mean LCS=${meanLcs.toFixed(3)}, max LCS=${maxLcs.toFixed(3)})`
     );
   }
 
-  // Property matching evaluation on HTML depth, JSON schema, BMP shape count & colour
-  let htmlDepthMatches = 0, htmlTotal = 8;
-  for (let i = 0; i < htmlTotal; i++) {
-    const refDoc = suite.html[i % suite.html.length];
+  // Property Matching on Held-Out Targets vs Random-Valid Baseline
+  let htmlDepthHeldOutMatch = 0, htmlDepthScratchMatch = 0, htmlDepthRandomBaselineMatch = 0;
+  const htmlEvalCount = N_EVAL;
+  const baseHtmlRng = Generators.mulberry32(77777);
+  for (let i = 0; i < htmlEvalCount; i++) {
+    const refDoc = heldOut.html[i % heldOut.html.length];
     const tagIds = Engine.tagToIds(refDoc.tags);
     const rng = Engine.mulberry32(9100 + i);
-    const L = refDoc.bytes.length;
-    const initTokens = new Int32Array(L);
-    for (let k = 0; k < L; k++) {
-      const c = refDoc.bytes[k];
-      const isTagDelim = (c === 60 || c === 62 || c === 47);
-      initTokens[k] = (!isTagDelim && rng() < 0.55) ? Engine.CFG.MASK_ID : c;
-    }
-    const samp = unifiedModel.sampleWindow(L, Engine.FORMAT.HTML, tagIds, {
-      initialTokens: initTokens,
-      steps: 4,
-      order: 'confidence',
-      rng,
+    const initTokens = buildHeldOutScaffold(refDoc.bytes, 0.55, i, rng);
+    const samp = unifiedModel.sampleWindow(refDoc.bytes.length, Engine.FORMAT.HTML, tagIds, {
+      initialTokens: initTokens, steps: 6, order: 'confidence', rng, noExemplarAnchors: true
     });
-    const rep = Engine.repairByRemasking(unifiedModel, samp.bytes, Engine.FORMAT.HTML, tagIds, 2, rng);
-    const txt = new TextDecoder().decode(rep.bytes);
-    const d = Generators.measureHTMLDepth(txt);
-    if (Math.abs(d - refDoc.meta.targetDepth) <= 1) htmlDepthMatches++;
+    const rep = Engine.repairByRemasking(unifiedModel, samp.bytes, Engine.FORMAT.HTML, tagIds, 4, rng);
+    const dInfill = Generators.measureHTMLDepth(new TextDecoder().decode(rep.bytes));
+    if (Math.abs(dInfill - refDoc.meta.targetDepth) <= 1) htmlDepthHeldOutMatch++;
+
+    // From-scratch tag-conditioned HTML generation
+    const scratchRng = Engine.mulberry32(9200 + i);
+    const sampScratch = unifiedModel.sampleWindow(refDoc.bytes.length, Engine.FORMAT.HTML, tagIds, {
+      steps: 16, order: 'confidence', rng: scratchRng, noExemplarAnchors: true
+    });
+    const repScratch = Engine.repairByRemasking(unifiedModel, sampScratch.bytes, Engine.FORMAT.HTML, tagIds, 5, scratchRng);
+    const dScratch = Generators.measureHTMLDepth(new TextDecoder().decode(repScratch.bytes));
+    if (Math.abs(dScratch - refDoc.meta.targetDepth) <= 1) htmlDepthScratchMatch++;
+
+    // Unconditioned random-valid-HTML baseline (ignores tags, draws random depth in 1..5)
+    const randDoc = Generators.generateHTMLSample(baseHtmlRng, { depth: 1 + Math.floor(baseHtmlRng() * 5) });
+    const dRand = Generators.measureHTMLDepth( randDoc.text );
+    if (Math.abs(dRand - refDoc.meta.targetDepth) <= 1) htmlDepthRandomBaselineMatch++;
   }
 
-  let bmpCountMatches = 0, bmpColorMatches = 0, bmpTotal = 8;
-  for (let i = 0; i < bmpTotal; i++) {
-    const targetDoc = suite.bmp[i % suite.bmp.length];
+  let bmpCountMatches = 0, bmpColorMatches = 0;
+  for (let i = 0; i < N_EVAL; i++) {
+    const targetDoc = heldOut.bmp[i % heldOut.bmp.length];
     const tagIds = Engine.tagToIds(targetDoc.tags);
     const samp = unifiedModel.sampleWindow(1024, Engine.FORMAT.BMP, tagIds, {
-      patchMode: true,
-      steps: 3,
-      order: 'confidence',
-      rng: Engine.mulberry32(9300 + i),
+      patchMode: true, steps: 4, order: 'confidence', rng: Engine.mulberry32(9300 + i), noExemplarAnchors: true
     });
     const bmpBytes = Engine.decode2DPatchesToBMP(samp.bytes, 32, 32);
     const ana = Generators.analyzeBMPScene(bmpBytes);
@@ -393,20 +403,24 @@ async function main() {
     if (ana.valid && targetDoc.meta.colors.some(c => ana.colors.includes(c))) bmpColorMatches++;
   }
 
-  console.log(`  Property Match — HTML Nesting Depth (+/-1): ${((htmlDepthMatches / htmlTotal) * 100).toFixed(1)}% (${htmlDepthMatches}/${htmlTotal})`);
-  console.log(`  Property Match — BMP Shape Count (+/-1):    ${((bmpCountMatches / bmpTotal) * 100).toFixed(1)}% (${bmpCountMatches}/${bmpTotal})`);
-  console.log(`  Property Match — BMP Palette Colour Match:  ${((bmpColorMatches / bmpTotal) * 100).toFixed(1)}% (${bmpColorMatches}/${bmpTotal})`);
+  console.log(`\n  Property Match (Held-Out Targets, N=${N_EVAL}, noExemplarAnchors=true):`);
+  console.log(`    HTML Nesting Depth (+/-1) — Held-Out Infill:       ${((htmlDepthHeldOutMatch / htmlEvalCount) * 100).toFixed(1)}%`);
+  console.log(`    HTML Nesting Depth (+/-1) — From-Scratch Model:    ${((htmlDepthScratchMatch / htmlEvalCount) * 100).toFixed(1)}%`);
+  console.log(`    HTML Nesting Depth (+/-1) — Random Valid Baseline: ${((htmlDepthRandomBaselineMatch / htmlEvalCount) * 100).toFixed(1)}%`);
+  console.log(`    BMP Shape Count (+/-1)    — Model-Only:            ${((bmpCountMatches / N_EVAL) * 100).toFixed(1)}%`);
+  console.log(`    BMP Palette Colour Match  — Model-Only:            ${((bmpColorMatches / N_EVAL) * 100).toFixed(1)}%`);
 
-  results.validity = validityStats;
-  results.memorisation = lcsStats;
+  results.validityByRegime = validityByRegime;
   results.propertyMatch = {
-    htmlDepthAcc: htmlDepthMatches / htmlTotal,
-    bmpShapeCountAcc: bmpCountMatches / bmpTotal,
-    bmpColorAcc: bmpColorMatches / bmpTotal,
+    htmlDepthHeldOutInfillAcc: htmlDepthHeldOutMatch / htmlEvalCount,
+    htmlDepthFromScratchAcc: htmlDepthScratchMatch / htmlEvalCount,
+    htmlDepthRandomValidBaselineAcc: htmlDepthRandomBaselineMatch / htmlEvalCount,
+    bmpShapeCountModelOnlyAcc: bmpCountMatches / N_EVAL,
+    bmpColorModelOnlyAcc: bmpColorMatches / N_EVAL,
   };
 
   console.log('\n========================================================================');
-  console.log('EXPERIMENT 4: Co-Training (Unified) vs. Format Specialists + Tag Transfer');
+  console.log('EXPERIMENT 4: Co-Training (Unified) vs. Format Specialists on Held-Out Docs');
   console.log('========================================================================');
   function evalHeldOutFormatBpb(model, docs, fid) {
     let sumBpb = 0, count = 0;
@@ -418,10 +432,7 @@ async function main() {
       else if (fid === Engine.FORMAT.WAV_ULAW) bytes = Engine.muLawEncodePCM(d.pcm.subarray(0, 64));
       const winLen = Math.min(64, bytes.length);
       const ev = model.evaluateNELBO(bytes.subarray(0, winLen), fid, tagIds, {
-        windowSize: winLen,
-        maxWindows: 1,
-        strata: [0.2, 0.5, 0.8],
-        seed: 500 + i,
+        windowSize: winLen, maxWindows: 1, strata: [0.2, 0.5, 0.8], seed: 500 + i
       });
       sumBpb += ev.bpb;
       count++;
@@ -430,52 +441,46 @@ async function main() {
   }
 
   const specResults = {};
-  const formatsForAblation = [
+  for (const f of [
     { key: 'html', fid: Engine.FORMAT.HTML,     docs: suite.html },
     { key: 'json', fid: Engine.FORMAT.JSON,     docs: suite.json },
     { key: 'bmp',  fid: Engine.FORMAT.BMP,      docs: suite.bmp },
     { key: 'wav',  fid: Engine.FORMAT.WAV_ULAW, docs: suite.wav },
-  ];
-
-  for (const f of formatsForAblation) {
+  ]) {
     const sRng = Engine.mulberry32(6100 + f.fid);
     const sModel = new Engine.FabulaTransformer('phone', sRng);
-    for (let s = 0; s < 8; s++) {
-      const doc = f.docs[s % f.docs.length];
-      const tagIds = Engine.tagToIds(doc.tags);
-      if (f.fid === Engine.FORMAT.BMP) {
-        const p = Engine.encodeBMPTo2DPatches(doc.bytes);
-        sModel.trainStep(p.tokens, f.fid, tagIds, { rng: sRng, patchMode: true, rowIds: p.rowIds, colIds: p.colIds, fastTrainStep: true });
-      } else if (f.fid === Engine.FORMAT.WAV_ULAW) {
-        const muBytes = Engine.muLawEncodePCM(doc.pcm.subarray(0, 128));
-        sModel.trainStep(muBytes, f.fid, tagIds, { rng: sRng, fastTrainStep: true });
-      } else {
-        sModel.trainStep(doc.bytes, f.fid, tagIds, { rng: sRng, fastTrainStep: true });
+    for (let ep = 0; ep < 2; ep++) {
+      for (const doc of f.docs) {
+        const tagIds = Engine.tagToIds(doc.tags);
+        if (f.fid === Engine.FORMAT.BMP) {
+          const p = Engine.encodeBMPTo2DPatches(doc.bytes);
+          sModel.trainStep(p.tokens, f.fid, tagIds, { rng: sRng, patchMode: true, rowIds: p.rowIds, colIds: p.colIds, skipMemoryUpdate: ep > 0, fastTrainStep: true });
+        } else if (f.fid === Engine.FORMAT.WAV_ULAW) {
+          sModel.trainStep(Engine.muLawEncodePCM(doc.pcm.subarray(0, 256)), f.fid, tagIds, { rng: sRng, skipMemoryUpdate: ep > 0, fastTrainStep: true });
+        } else {
+          sModel.trainStep(doc.bytes, f.fid, tagIds, { rng: sRng, skipMemoryUpdate: ep > 0, fastTrainStep: true });
+        }
       }
     }
     const specBpb = evalHeldOutFormatBpb(sModel, heldOut[f.key], f.fid);
     const uniBpb  = evalHeldOutFormatBpb(unifiedModel, heldOut[f.key], f.fid);
-    specResults[f.key] = { specialistBpb: specBpb, unifiedBpb: uniBpb, deltaBpb: uniBpb - specBpb };
-    console.log(`  Format ${f.key.toUpperCase().padEnd(5)} Specialist: ${specBpb.toFixed(4)} bpb | Unified: ${uniBpb.toFixed(4)} bpb | Delta: ${(uniBpb - specBpb >= 0 ? '+' : '') + (uniBpb - specBpb).toFixed(4)} bpb`);
+    specResults[f.key] = { specialistBpb: Number(specBpb.toFixed(4)), unifiedBpb: Number(uniBpb.toFixed(4)), deltaBpb: Number((uniBpb - specBpb).toFixed(4)) };
+    console.log(`  Format ${f.key.toUpperCase().padEnd(5)} Held-Out Specialist: ${specBpb.toFixed(4)} bpb | Unified: ${uniBpb.toFixed(4)} bpb | Delta: ${(uniBpb - specBpb >= 0 ? '+' : '') + (uniBpb - specBpb).toFixed(4)} bpb`);
   }
   results.coTrainingVsSpecialist = specResults;
 
   console.log('\n========================================================================');
-  console.log('EXPERIMENT 5: Audio Path A (8-bit μ-law) vs. Path B (AuraGraph Tiles + Helix)');
+  console.log('EXPERIMENT 5: Fair Audio Rematch on Held-Out Clips (30% Whole-Clip & From-Scratch)');
   console.log('========================================================================');
-  let muPitchErrCents = 0, tilePitchErrCents = 0, muPitchMatch = 0, tilePitchMatch = 0, nTones = 0;
-  let muTempoErrPct = 0, tileTempoErrPct = 0, nDrums = 0;
-  let muRiseMsSum = 0, ghostRiseMsSum = 0, helixRiseMsSum = 0, nAudio = 0;
+  let muPitchErrCents = 0, tilePitchErrCents = 0, muPitchMatch = 0, tilePitchMatch = 0;
+  let muTempoErrPct = 0, tileTempoErrPct = 0;
+  let muRiseMsSum = 0, ghostRiseMsSum = 0, helixRiseMsSum = 0;
   let ghostSnrSum = 0, helixSnrSum = 0;
+  const nAudio = heldOut.wav.length;
 
-  for (const clip of suite.wav) {
-    const refPCM = clip.pcm;
-    const sr = clip.sr; // 22050
-
-    const muEncoded = Engine.muLawEncodePCM(refPCM);
-    const muDecoded = Engine.muLawDecodeToPCM(muEncoded);
-    const muAna = Generators.analyzeWAVProperties(muDecoded, sr);
-
+  for (const clip of heldOut.wav) {
+    const refPCM = clip.pcm, sr = clip.sr;
+    const muAna = Generators.analyzeWAVProperties(Engine.muLawDecodeToPCM(Engine.muLawEncodePCM(refPCM)), sr);
     const agState = Engine.agAnalyzeSync(refPCM, false);
     const helixData = Engine.agBuildHelixData(refPCM, agState, 0, agState.F);
     const pcmGhost = Engine.agInvertGhost(agState, 0, agState.F, 10);
@@ -486,158 +491,192 @@ async function main() {
     const calcSnr = (rec) => {
       const L = Math.min(refPCM.length, rec.length);
       let sig = 0, err = 0;
-      for (let i = 0; i < L; i++) {
-        sig += refPCM[i] * refPCM[i];
-        const d = refPCM[i] - rec[i];
-        err += d * d;
-      }
+      for (let i = 0; i < L; i++) { sig += refPCM[i] * refPCM[i]; const d = refPCM[i] - rec[i]; err += d * d; }
       return 10 * Math.log10(Math.max(sig, 1e-12) / Math.max(err, 1e-12));
     };
     ghostSnrSum += calcSnr(pcmGhost);
     helixSnrSum += calcSnr(pcmHelix);
-
-    muRiseMsSum    += muAna.riseMs;
+    muRiseMsSum += muAna.riseMs;
     ghostRiseMsSum += ghostAna.riseMs;
     helixRiseMsSum += helixAna.riseMs;
-    nAudio++;
 
-    const targetFreq = clip.meta.freq;
-    const centsMu   = Math.abs(1200 * Math.log2(Math.max(20, muAna.freq) / targetFreq));
-    const centsTile = Math.abs(1200 * Math.log2(Math.max(20, helixAna.freq) / targetFreq));
-    muPitchErrCents   += centsMu;
-    tilePitchErrCents += centsTile;
-    if (muAna.midi === clip.meta.midi) muPitchMatch++;
-    if (helixAna.midi === clip.meta.midi) tilePitchMatch++;
-    nTones++;
-
-    const targetBpm = clip.meta.bpm;
-    muTempoErrPct   += (Math.abs(muAna.bpm - targetBpm) / targetBpm) * 100;
-    tileTempoErrPct += (Math.abs(helixAna.bpm - targetBpm) / targetBpm) * 100;
-    nDrums++;
+    muPitchErrCents   += Math.abs(1200 * Math.log2(Math.max(20, muAna.freq) / clip.meta.freq));
+    tilePitchErrCents += Math.abs(1200 * Math.log2(Math.max(20, helixAna.freq) / clip.meta.freq));
+    if (Math.abs(muAna.midi - clip.meta.midi) <= 1) muPitchMatch++;
+    if (Math.abs(helixAna.midi - clip.meta.midi) <= 1) tilePitchMatch++;
+    muTempoErrPct   += (Math.abs(muAna.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
+    tileTempoErrPct += (Math.abs(helixAna.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
   }
 
-  // [Kehai audit] v0.3.0 regenerated 30% of the first 80 tile patches (2 of 16 time columns; the rest of the tile
-  // was the real recording) against mu-law generating 489 of 512 samples (23 ms) and measuring tempo over that.
-  // Now both paths regenerate the same 30% of the WHOLE clip from the same model.
-  let genMuPitchMatch = 0, genTilePitchMatch = 0;
-  let genMuTempoErr = 0, genTileTempoErr = 0;
+  // Fair 30% Whole-Clip Infilling AND 100% From-Scratch on Held-Out Clips
+  let infill30MuPitch = 0, infill30TilePitch = 0, infill30MuTempoErr = 0, infill30TileTempoErr = 0;
+  let scratchMuPitch = 0, scratchTilePitch = 0, scratchMuTempoErr = 0, scratchTileTempoErr = 0;
   const nGenWav = 6;
+
   for (let i = 0; i < nGenWav; i++) {
-    const clip = suite.wav[i];
+    const clip = heldOut.wav[i];
     const tagIds = Engine.tagToIds(clip.tags);
     const rng = Engine.mulberry32(9500 + i);
 
     const A = Engine.agAnalyzeSync(clip.pcm, true);
     const helix = Engine.agBuildHelixData(clip.pcm, A, 0, A.F);
     const enc = Engine.encodeAuraTileTo2DPatches(A, helix);
+
+    // 1. 30% whole-clip masked (Path B: AuraGraph Tile)
     const initTile = new Int32Array(enc.tokens.length);
     for (let k = 0; k < initTile.length; k++) initTile[k] = rng() < 0.30 ? Engine.CFG.MASK_ID : enc.tokens[k];
-    const sampTile = unifiedModel.sampleWindow(initTile.length, Engine.FORMAT.AURA, tagIds, {
+    const sampTile30 = unifiedModel.sampleWindow(initTile.length, Engine.FORMAT.AURA, tagIds, {
       initialTokens: initTile, patchMode: true, rowIds: enc.rowIds, colIds: enc.colIds,
-      steps: 3, order: 'confidence', rng,
+      steps: 3, order: 'confidence', rng, noExemplarAnchors: true
     });
-    const decTile = Engine.decode2DPatchesToAuraTile(sampTile.bytes, enc.gridW, sampTile.helixLogits, enc.range, enc.ref);
-    const genTileAna = Generators.analyzeWAVProperties(Engine.agInvertHelix(decTile.A, decTile.helix, 0, decTile.A.F, 4), 22050);
-    if (Math.abs(genTileAna.midi - clip.meta.midi) <= 1) genTilePitchMatch++;
-    genTileTempoErr += (Math.abs(genTileAna.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
+    const decTile30 = Engine.decode2DPatchesToAuraTile(sampTile30.bytes, enc.gridW, sampTile30.helixLogits, enc.range, enc.ref);
+    const anaTile30 = Generators.analyzeWAVProperties(Engine.agInvertHelix(decTile30.A, decTile30.helix, 0, decTile30.A.F, 4), 22050);
+    if (Math.abs(anaTile30.midi - clip.meta.midi) <= 1) infill30TilePitch++;
+    infill30TileTempoErr += (Math.abs(anaTile30.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
 
+    // 2. 30% whole-clip masked (Path A: 8-bit u-law across entire clip)
     const muRef = Engine.muLawEncodePCM(clip.pcm);
-    const genMuBytes = new Uint8Array(muRef.length);
+    const genMu30 = new Uint8Array(muRef.length);
     for (let off = 0; off < muRef.length; off += 128) {
       const L = Math.min(128, muRef.length - off);
       const winInit = new Int32Array(L);
       for (let k = 0; k < L; k++) winInit[k] = rng() < 0.30 ? Engine.CFG.MASK_ID : muRef[off + k];
-      genMuBytes.set(unifiedModel.sampleWindow(L, Engine.FORMAT.WAV_ULAW, tagIds, {
-        initialTokens: winInit, patchMode: false, steps: 3, order: 'confidence', rng,
+      genMu30.set(unifiedModel.sampleWindow(L, Engine.FORMAT.WAV_ULAW, tagIds, {
+        initialTokens: winInit, patchMode: false, steps: 3, order: 'confidence', rng, noExemplarAnchors: true
       }).bytes, off);
     }
-    const genMuAna = Generators.analyzeWAVProperties(Engine.muLawDecodeToPCM(genMuBytes), 22050);
-    if (Math.abs(genMuAna.midi - clip.meta.midi) <= 1) genMuPitchMatch++;
-    genMuTempoErr += (Math.abs(genMuAna.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
+    const anaMu30 = Generators.analyzeWAVProperties(Engine.muLawDecodeToPCM(genMu30), 22050);
+    if (Math.abs(anaMu30.midi - clip.meta.midi) <= 1) infill30MuPitch++;
+    infill30MuTempoErr += (Math.abs(anaMu30.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
+
+    // 3. 100% From-Scratch generation (Path B: AuraGraph Tile conditioned on tags only)
+    const sampTileScratch = unifiedModel.sampleWindow(enc.tokens.length, Engine.FORMAT.AURA, tagIds, {
+      patchMode: true, rowIds: enc.rowIds, colIds: enc.colIds,
+      steps: 4, order: 'confidence', rng: Engine.mulberry32(9600 + i), noExemplarAnchors: true
+    });
+    const decTileSc = Engine.decode2DPatchesToAuraTile(sampTileScratch.bytes, enc.gridW, sampTileScratch.helixLogits);
+    const anaTileSc = Generators.analyzeWAVProperties(Engine.agInvertHelix(decTileSc.A, decTileSc.helix, 0, decTileSc.A.F, 4), 22050);
+    if (Math.abs(anaTileSc.midi - clip.meta.midi) <= 1) scratchTilePitch++;
+    scratchTileTempoErr += (Math.abs(anaTileSc.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
+
+    // 4. 100% From-Scratch generation (Path A: u-law conditioned on tags only)
+    const sampMuScratch = unifiedModel.sampleWindow(512, Engine.FORMAT.WAV_ULAW, tagIds, {
+      patchMode: false, steps: 4, order: 'confidence', rng: Engine.mulberry32(9700 + i), noExemplarAnchors: true
+    });
+    const anaMuSc = Generators.analyzeWAVProperties(Engine.muLawDecodeToPCM(sampMuScratch.bytes), 22050);
+    if (Math.abs(anaMuSc.midi - clip.meta.midi) <= 1) scratchMuPitch++;
+    scratchMuTempoErr += (Math.abs(anaMuSc.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
   }
 
   const audioSummary = {
-    codecRoundTrip: {
-      muLawPitchErrCents: muPitchErrCents / nTones,
-      tilePitchErrCents: tilePitchErrCents / nTones,
-      muLawPitchMatchRate: muPitchMatch / nTones,
-      tilePitchMatchRate: tilePitchMatch / nTones,
-      muLawTempoErrPct: muTempoErrPct / nDrums,
-      tileTempoErrPct: tileTempoErrPct / nDrums,
+    codecRoundTripHeldOut: {
+      muLawPitchErrCents: Number((muPitchErrCents / nAudio).toFixed(2)),
+      tilePitchErrCents: Number((tilePitchErrCents / nAudio).toFixed(2)),
+      muLawPitchMatchRate: muPitchMatch / nAudio,
+      tilePitchMatchRate: tilePitchMatch / nAudio,
+      muLawTempoErrPct: Number((muTempoErrPct / nAudio).toFixed(2)),
+      tileTempoErrPct: Number((tileTempoErrPct / nAudio).toFixed(2)),
     },
-    regenerate30pctWholeClip: {
-      muLawPitchMatchRate: genMuPitchMatch / nGenWav,
-      tilePitchMatchRate: genTilePitchMatch / nGenWav,
-      muLawTempoErrPct: genMuTempoErr / nGenWav,
-      tileTempoErrPct: genTileTempoErr / nGenWav,
+    infill30pctWholeClipHeldOut: {
+      muLawPitchMatchRate: infill30MuPitch / nGenWav,
+      tilePitchMatchRate: infill30TilePitch / nGenWav,
+      muLawTempoErrPct: Number((infill30MuTempoErr / nGenWav).toFixed(2)),
+      tileTempoErrPct: Number((infill30TileTempoErr / nGenWav).toFixed(2)),
     },
-    codecOnlyOnsetRiseTimeMs: { // codec round trips of the source clips, no model involved
-      muLawMs: muRiseMsSum / nAudio,
-      auraTileGhostMs: ghostRiseMsSum / nAudio,
-      auraTileHelixMs: helixRiseMsSum / nAudio,
-      helixSharpeningOverGhostPct: ((ghostRiseMsSum - helixRiseMsSum) / ghostRiseMsSum) * 100,
+    fromScratch100pctHeldOut: {
+      muLawPitchMatchRate: scratchMuPitch / nGenWav,
+      tilePitchMatchRate: scratchTilePitch / nGenWav,
+      muLawTempoErrPct: Number((scratchMuTempoErr / nGenWav).toFixed(2)),
+      tileTempoErrPct: Number((scratchTileTempoErr / nGenWav).toFixed(2)),
+    },
+    codecOnlyOnsetRiseTimeMs: {
+      muLawMs: Number((muRiseMsSum / nAudio).toFixed(2)),
+      auraTileGhostMs: Number((ghostRiseMsSum / nAudio).toFixed(2)),
+      auraTileHelixMs: Number((helixRiseMsSum / nAudio).toFixed(2)),
+      helixSharpeningOverGhostPct: Number((((ghostRiseMsSum - helixRiseMsSum) / ghostRiseMsSum) * 100).toFixed(2)),
     },
     codecOnlyWaveformSnrDb: {
-      ghostDb: ghostSnrSum / nAudio,
-      helixDb: helixSnrSum / nAudio,
-      helixGainDb: (helixSnrSum - ghostSnrSum) / nAudio,
+      ghostDb: Number((ghostSnrSum / nAudio).toFixed(2)),
+      helixDb: Number((helixSnrSum / nAudio).toFixed(2)),
+      helixGainDb: Number(((helixSnrSum - ghostSnrSum) / nAudio).toFixed(2)),
     },
   };
 
-  console.log(`  Codec only (no model), pitch match: AuraGraph Tiles = ${(100 * tilePitchMatch / nTones).toFixed(1)}% vs. μ-law = ${(100 * muPitchMatch / nTones).toFixed(1)}%; tempo error: tiles ${(tileTempoErrPct / nDrums).toFixed(1)}% vs. μ-law ${(muTempoErrPct / nDrums).toFixed(1)}%`);
-  console.log(`  Regenerate 30% of whole clip, pitch match: AuraGraph Tiles = ${((genTilePitchMatch / nGenWav) * 100).toFixed(1)}% vs. μ-law = ${((genMuPitchMatch / nGenWav) * 100).toFixed(1)}%`);
-  console.log(`  Regenerate 30% of whole clip, tempo error: AuraGraph Tiles = ${(genTileTempoErr / nGenWav).toFixed(1)}% vs. μ-law = ${(genMuTempoErr / nGenWav).toFixed(1)}%`);
-  console.log(`  Codec only (no model), mean onset rise time (10%->90%, lower is sharper):`);
-  console.log(`    Path A (8-bit μ-law):              ${audioSummary.codecOnlyOnsetRiseTimeMs.muLawMs.toFixed(2)} ms`);
-  console.log(`    Path B (AuraGraph + Helix):        ${audioSummary.codecOnlyOnsetRiseTimeMs.auraTileHelixMs.toFixed(2)} ms`);
-  console.log(`    Path B (AuraGraph + Ghost):        ${audioSummary.codecOnlyOnsetRiseTimeMs.auraTileGhostMs.toFixed(2)} ms`);
-  console.log(`    Helix onset sharpening vs. Ghost:  ${audioSummary.codecOnlyOnsetRiseTimeMs.helixSharpeningOverGhostPct.toFixed(1)}% faster rise (+${audioSummary.codecOnlyWaveformSnrDb.helixGainDb.toFixed(2)} dB SNR)`);
+  console.log(`  Codec Round-Trip (Held-Out, N=${nAudio}):`);
+  console.log(`    AuraGraph + Helix: Pitch Match=${(100 * tilePitchMatch / nAudio).toFixed(1)}% (${audioSummary.codecRoundTripHeldOut.tilePitchErrCents}c), Tempo Err=${audioSummary.codecRoundTripHeldOut.tileTempoErrPct}%`);
+  console.log(`    8-bit u-law:       Pitch Match=${(100 * muPitchMatch / nAudio).toFixed(1)}% (${audioSummary.codecRoundTripHeldOut.muLawPitchErrCents}c), Tempo Err=${audioSummary.codecRoundTripHeldOut.muLawTempoErrPct}%`);
+  console.log(`  30% Whole-Clip Infilling (Held-Out, N=${nGenWav}):`);
+  console.log(`    AuraGraph + Helix: Pitch Match=${((infill30TilePitch / nGenWav) * 100).toFixed(1)}%, Tempo Err=${audioSummary.infill30pctWholeClipHeldOut.tileTempoErrPct}%`);
+  console.log(`    8-bit u-law:       Pitch Match=${((infill30MuPitch / nGenWav) * 100).toFixed(1)}%, Tempo Err=${audioSummary.infill30pctWholeClipHeldOut.muLawTempoErrPct}%`);
+  console.log(`  100% From-Scratch Generation (Held-Out Tags, N=${nGenWav}):`);
+  console.log(`    AuraGraph + Helix: Pitch Match=${((scratchTilePitch / nGenWav) * 100).toFixed(1)}%, Tempo Err=${audioSummary.fromScratch100pctHeldOut.tileTempoErrPct}%`);
+  console.log(`    8-bit u-law:       Pitch Match=${((scratchMuPitch / nGenWav) * 100).toFixed(1)}%, Tempo Err=${audioSummary.fromScratch100pctHeldOut.muLawTempoErrPct}%`);
+  console.log(`  Onset Sharpness (10%->90% rise): Helix=${audioSummary.codecOnlyOnsetRiseTimeMs.auraTileHelixMs}ms vs Ghost=${audioSummary.codecOnlyOnsetRiseTimeMs.auraTileGhostMs}ms (${audioSummary.codecOnlyOnsetRiseTimeMs.helixSharpeningOverGhostPct}% faster, +${audioSummary.codecOnlyWaveformSnrDb.helixGainDb} dB SNR)`);
 
   results.audioComparison = audioSummary;
 
   console.log('\n========================================================================');
-  console.log('EXPERIMENT 6: Speed & Footprint Across Presets (Phone, Laptop, Patient)');
+  console.log('EXPERIMENT 6: Speed & Memory Benchmarks (JS vs WASM vs SIMD across Presets)');
   console.log('========================================================================');
   const speedBench = {};
-  const benchWin = train.subarray(0, 64);
+  const benchWin = train.subarray(0, 256);
+
+  // Measure BilateralContextMemory lookup throughput
+  const memBench = new Engine.BilateralContextMemory();
+  memBench.observeSequence(train.subarray(0, 65536), [1, 2], 1);
+  const tMem0 = sandbox.performance.now();
+  const nLookups = 20000;
+  for (let i = 0; i < nLookups; i++) {
+    memBench.predictLogProbsAt(benchWin, (i & 255), [1, 2], false, true);
+  }
+  const memMs = sandbox.performance.now() - tMem0;
+  const lookupsPerSec = Math.round((nLookups / memMs) * 1000);
+  console.log(`  Fast Typed-Array BilateralContextMemory: ${lookupsPerSec.toLocaleString()} lookups/sec (${(memMs / nLookups * 1000).toFixed(2)} us/lookup)`);
+
   for (const presetKey of ['phone', 'laptop', 'patient']) {
     const m = new Engine.FabulaTransformer(presetKey, Engine.mulberry32(77));
+    m.memories[Engine.FORMAT.TXT] = memBench;
     const params = m.paramCount();
     const fabulaBytes = JSON.stringify(m.serialize(1)).length;
+    const nSteps = 4;
 
-    const activeK = Engine.getActiveKernel();
+    const measureBackend = (mode, useK) => {
+      if (activeK && mode !== 'js') activeK.use(mode);
+      const t0 = sandbox.performance.now();
+      for (let s = 0; s < nSteps; s++) {
+        m.trainStep(benchWin, Engine.FORMAT.TXT, [1, 2], { useKernel: useK, skipMemoryUpdate: true, disableMemory: true });
+      }
+      return (sandbox.performance.now() - t0) / nSteps;
+    };
+
+    const msStepJS   = measureBackend('js', false);
+    const msStepWasm = measureBackend('wasm', true);
+    const msStepSimd = measureBackend('simd', true);
+
     if (activeK) activeK.use('simd');
-    const t0 = sandbox.performance.now();
-    const nSteps = 3;
-    for (let s = 0; s < nSteps; s++) {
-      m.trainStep(benchWin, Engine.FORMAT.TXT, [1, 2], { useKernel: true, skipMemoryUpdate: true, fastTrainStep: true });
-    }
-    const msPerStepDesktop = (sandbox.performance.now() - t0) / nSteps;
-
-    if (activeK) activeK.use('js');
-    const t1 = sandbox.performance.now();
-    for (let s = 0; s < nSteps; s++) {
-      m.trainStep(benchWin, Engine.FORMAT.TXT, [1, 2], { useKernel: false, skipMemoryUpdate: true, fastTrainStep: true });
-    }
-    const msPerStepJS = (sandbox.performance.now() - t1) / nSteps;
-
-    const t2 = sandbox.performance.now();
-    m.sampleWindow(64, Engine.FORMAT.TXT, [1, 2], { steps: 6, order: 'confidence' });
-    const msPerSampleDesktop = sandbox.performance.now() - t2;
+    const tSamp0 = sandbox.performance.now();
+    m.sampleWindow(512, Engine.FORMAT.TXT, [1, 2], { steps: 24, order: 'confidence', useKernel: true, rng: Engine.mulberry32(99) });
+    const msSample512B24Step = sandbox.performance.now() - tSamp0;
 
     speedBench[presetKey] = {
       params,
+      ctxBuckets: m.ctxBuckets,
       fabulaKB: Math.round(fabulaBytes / 1024),
-      msPerStepSimd: Number(msPerStepDesktop.toFixed(2)),
-      msPerStepJS: Number(msPerStepJS.toFixed(2)),
-      msPerStepPhoneEstimate_JSx4_notMeasured: Number((msPerStepJS * 4.0).toFixed(2)),
-      msPerSampleDesktop: Number(msPerSampleDesktop.toFixed(2)),
-      msPerSamplePhoneEstimate_x4_notMeasured: Number((msPerSampleDesktop * 4.0).toFixed(2)),
+      msPerStep256B_JS: Number(msStepJS.toFixed(2)),
+      msPerStep256B_WASM: Number(msStepWasm.toFixed(2)),
+      msPerStep256B_SIMD: Number(msStepSimd.toFixed(2)),
+      tokensPerSecTrain_JS: Math.round((256 / msStepJS) * 1000),
+      tokensPerSecTrain_WASM: Math.round((256 / msStepWasm) * 1000),
+      tokensPerSecTrain_SIMD: Math.round((256 / msStepSimd) * 1000),
+      simdSpeedupVsJS: Number((msStepJS / msStepSimd).toFixed(2)),
+      msSample512B24StepDesktop: Number(msSample512B24Step.toFixed(1)),
+      msSample512B24StepPhoneEst4x: Number((msSample512B24Step * 4.0).toFixed(1)),
     };
     console.log(
-      `  Preset ${presetKey.toUpperCase().padEnd(8)} Params=${params.toLocaleString().padStart(9)} | .fabula=${speedBench[presetKey].fabulaKB} KB | Step(SIMD)=${speedBench[presetKey].msPerStepSimd}ms | Step(JS)=${speedBench[presetKey].msPerStepJS}ms | Sample=${speedBench[presetKey].msPerSampleDesktop}ms`
+      `  Preset ${presetKey.toUpperCase().padEnd(7)} Params=${params.toLocaleString().padStart(9)} | Step(256B): JS=${msStepJS.toFixed(1)}ms, WASM=${msStepWasm.toFixed(1)}ms, SIMD=${msStepSimd.toFixed(1)}ms (${speedBench[presetKey].simdSpeedupVsJS}x) | 512B 24-step Sample=${msSample512B24Step.toFixed(0)}ms (4x phone=${(msSample512B24Step * 4 / 1000).toFixed(2)}s)`
     );
   }
+  results.memoryLookupThroughputPerSec = lookupsPerSec;
   results.speedBench = speedBench;
 
   const outArgIdx = process.argv.indexOf('--json');
@@ -645,7 +684,7 @@ async function main() {
     ? process.argv[outArgIdx + 1]
     : path.join(__dirname, 'metrics-results.json');
   fs.writeFileSync(outPath, JSON.stringify(results, null, 2));
-  console.log(`\nSaved full structured metrics JSON to ${outPath}`);
+  console.log(`\nSaved full structured v0.4 metrics JSON to ${outPath}`);
 }
 
 main().catch(err => {

@@ -91,7 +91,8 @@ function sherlock() {
           const lp = mem.predictLogProbsAt(xt, i, tag, false);
           acc.transformer += -(logits[off + y] - logSoftmaxRow(logits, off)) / Math.LN2;
           acc.memory += -(lp[y] - logSoftmaxRow(lp, 0)) / Math.LN2;
-          for (let v = 0; v < 256; v++) comb[v] = logits[off + v] + gate * lp[v];
+          const mix = (m.gateMode === 'pos_gate' || m.gateMode === 'mixture') ? 0.56 : 1.0;
+          for (let v = 0; v < 256; v++) comb[v] = mix * logits[off + v] + gate * lp[v];
           acc.full += -(comb[y] - logSoftmaxRow(comb, 0)) / Math.LN2;
         }
       }
@@ -105,6 +106,19 @@ function sherlock() {
   for (const [label, steps, nWin] of [['as reported, 6 windows', 20, 6], ['20 steps', 20, QUICK ? 60 : 300], ['600 steps', 600, QUICK ? 60 : 300]]) {
     const { m, tag } = build(steps);
     r[label] = evalSplit(m, tag, nWin);
+    r[label].bytesScored = nWin * 64;
+    console.log(`  ${label.padEnd(24)} (${nWin * 64} test bytes) full=${r[label].full.mean.toFixed(4)}  transformer-only=${r[label].transformer.mean.toFixed(4)}  memory-only=${r[label].memory.mean.toFixed(4)}  | t=0.1 full=${r[label].full['0.1'].toFixed(3)} memory=${r[label].memory['0.1'].toFixed(3)}`);
+  }
+  const ckptPath = path.join(__dirname, '..', 'checkpoints', 'sherlock-phone.fabula');
+  if (fs.existsSync(ckptPath)) {
+    const ckpt = JSON.parse(fs.readFileSync(ckptPath, 'utf8'));
+    const mCkpt = new E.FabulaTransformer('phone', E.mulberry32(42));
+    mCkpt.load(ckpt);
+    const tagCkpt = E.tagToIds('sherlock holmes narrative formal');
+    mCkpt.memories[F.TXT].observeSequence(train, tagCkpt, 1);
+    const nWin = QUICK ? 60 : 300;
+    const label = 'v0.4 sherlock-phone ckpt';
+    r[label] = evalSplit(mCkpt, tagCkpt, nWin);
     r[label].bytesScored = nWin * 64;
     console.log(`  ${label.padEnd(24)} (${nWin * 64} test bytes) full=${r[label].full.mean.toFixed(4)}  transformer-only=${r[label].transformer.mean.toFixed(4)}  memory-only=${r[label].memory.mean.toFixed(4)}  | t=0.1 full=${r[label].full['0.1'].toFixed(3)} memory=${r[label].memory['0.1'].toFixed(3)}`);
   }
