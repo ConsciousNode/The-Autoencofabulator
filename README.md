@@ -1,213 +1,89 @@
-# The Autoencofabulator
+# The Autoencofabulator v0.3: Realized
 
-[![Version](https://img.shields.io/badge/version-0.2.2-7c5cfc?style=flat-square)](#changelog)
-[![MIT License](https://img.shields.io/badge/license-MIT-7c5cfc?style=flat-square)](LICENSE)
-[![Xinu Compliant](https://img.shields.io/badge/xinu-compliant-3d2d8a?style=flat-square)](https://consciousnode.github.io)
-[![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-17152a?style=flat-square)](#)
-[![Browser Native](https://img.shields.io/badge/runtime-browser_native-0d0b1e?style=flat-square)](#)
-[![Single File](https://img.shields.io/badge/build-single_file-17152a?style=flat-square)](#)
-[![ConsciousNode SoftWorks](https://img.shields.io/badge/ConsciousNode-SoftWorks-7c5cfc?style=flat-square)](https://github.com/ConsciousNode)
-
-**[→ Open in Browser](https://consciousnode.github.io/The-Autoencofabulator/)**
-
-A browser-native diffusion model that trains on your files and generates new ones. Never leaves the browser. No upload. No server. No account.
-
-> *"Give me a WAV that sounds upbeat and jazzy."*
-> Drop some WAV files. Train. Tag. Generate. Download.
+**One model that learns any file in a single offline browser tab — made real with Masked Byte Diffusion, 2-D Patch Tokens, Dual-Path Audio (8-bit μ-law & AuraGraph v0.3.1 Tiles + Timing Helix), and Compiler-as-Validator Repair.**
 
 ---
 
-## What It Is
+## 1. What Changed in v0.3 ("Realized")
 
-The Autoencofabulator treats every file as what it fundamentally is: **a byte sequence with statistical structure**. Diffusion models learn to reverse a noise process — train on enough examples of a format and the model learns the statistical structure of that format implicitly, without being told what a WAV header is, or what HTML looks like, or how BMP pixel rows are laid out.
+In v0.1–v0.2.3, The Autoencofabulator diffused raw byte values as continuous numbers in $[-1, +1]$ under Gaussian noise with a 4-layer chunk-independent MLP (`ScoreNet`). Even with exact analytical gradients (v0.2.1 / v0.2.3), that design had four fundamental walls:
+1. **Bytes are categories, not quantities:** Gaussian noise between `'<'` (60) and `'>'` (62) passes through `'='` (61), turning text and markup into unparseable static.
+2. **Independent chunks have no context:** Generating 256-byte chunks independently meant HTML tags opened in chunk 1 could never close in chunk 2, and BMPs were quilts of unrelated $8\times 8$ patches.
+3. **Audio was capped by sum-of-sinusoids decoding:** `SpikeVox` could only ever produce band-limited synth wash.
+4. **Nothing was measured against held-out data or baselines.**
 
-This is diffusion applied directly to raw bytes. No latent space. No encoder. No external dependencies. One HTML file, offline forever.
+**v0.3 fixes all four:**
 
----
-
-## Supported Formats — v0.2
-
-| Format | Encoding | What gets diffused | Notes |
-|--------|----------|--------------------|-------|
-| **TXT** | Raw bytes | Full byte sequence | UTF-8, ASCII; model learns character distributions |
-| **HTML** | Raw bytes | Full byte sequence | Single-file artifacts; model learns tag structure implicitly |
-| **BMP** | **ElasticTok** | 8×8px spatial patches (192 RGB floats + position) | Preserves 2D topology; header templated |
-| **WAV** | **SpikeVox** | LIF spike-rate features | Biologically-grounded audio encoding; header templated |
-
-BMP and WAV headers are deterministic for given dimensions/sample rates — no point diffusing them. We template the header and diffuse what actually varies: the pixels and the samples.
-
----
-
-## How It Works
-
-### Training
-
-1. Drop files into the corpus (TXT, HTML, BMP, or WAV — mix formats freely)
-2. Files are validated, stripped to their payload, split into 256-element chunks
-3. Each training step:
-   - Random chunk sampled from corpus
-   - Random timestep `t ∈ [1, 200]` sampled
-   - Chunk noised via forward diffusion: `x_t = √ᾱ_t · x₀ + √(1-ᾱ_t) · ε`
-   - **ScoreNet** predicts the noise `ε`
-   - MSE loss computed; gradients flow back through ScoreNet
-   - Adam optimizer updates weights
-4. Loss curve updates every 8 steps; browser stays responsive via cooperative yielding
-
-### Generation
-
-1. Select format, enter semantic tags (`upbeat, jazz, minimal, calculator`...)
-2. Specify output size (chars / pixels / duration)
-3. Start from pure Gaussian noise, chunk by chunk
-4. DDPM reverse sampling for `t = T → 1` per chunk
-5. Denormalize; prepend templated header (BMP/WAV)
-6. Validation layer runs automatically
-7. Download
-
-### Validation (from Once Bytten)
-
-Every generated output is scanned:
-- **Magic bytes** — header matches expected format signature
-- **Shannon entropy** — within expected range for format
-- **ROSA structural ratio** — bigram uniqueness within expected range
-- **Format-specific checks** — BMP dimension consistency, WAV data size, HTML marker presence
-
-Result: PASS / WARN / FAIL. FAIL triggers a resample suggestion.
+| Pillar | v0.2.3 (Legacy) | v0.3 (*Realized*) |
+| :--- | :--- | :--- |
+| **Diffusion Process** | Continuous Gaussian DDPM over byte values $\in [-1, +1]$ | **Masked Byte Diffusion (MDLM / D3PM absorbing state)** over 256 byte categories (`0..255`) + `[MASK]` (`256`) |
+| **Denoiser Backbone** | 4-layer MLP (`ScoreNet`) on independent 256-element chunks | **Bidirectional RoPE + Local-Conv + Dual-AdaLN Transformer (`FabulaTransformer`)** over 512-byte windows + Differentiably-Gated Bilateral Context Memory |
+| **Long Files & Infilling** | Independent chunks (no boundary continuity) | **Sliding-window generation with 128-byte fixed context overlap** + arbitrary hole **Infilling** (`??` / `[MASK]` spans) |
+| **2-D Images (BMP)** | Independent $8\times 8$ RGB float patches (`ElasticTok`) | **$4\times 4$ 2-D byte patch tokens** (`16` bytes/token) with 2-D row & column embeddings + top-row context continuity (`ElasticTok` kept as labelled legacy option) |
+| **Audio Path A** | `SpikeVox` LIF spike rates + sum of sinusoids | **8-bit ITU-T G.711 μ-law** waveform bytes (`256` categories) with overlap context, exported as 16-bit PCM `.wav` (`SpikeVox` kept as labelled legacy option) |
+| **Audio Path B** | None | **Inlined AuraGraph v0.3.1 tiles** (`160` log-frequency bands × time) + co-generated **Timing Helix** events decoded via **AuraLoom v0.5** (**Helix** & **Ghost** playback), exported as `.aura.png` and `.wav` |
+| **Validation & Repair** | Magic bytes + Shannon entropy + ROSA bigram uniqueness | **Compiler-as-Validator in the tab** (`JSON.parse`, `DOMParser` for HTML/SVG/XML, sandboxed Worker `new Function` for JS, structural C + external `gcc -fsyntax-only` hook in Node) + **Repair-by-Remasking** around parser error byte offsets |
+| **Evaluation** | Training MSE curve only | Held-out continuous-time **NELBO in bits/byte (bpb)** vs. Unigram, Bigram & Order-4 Kneser-Ney baselines on *Sherlock Holmes* (`80/10/10` split), property analyzers, and LCS memorisation checks (`research/REALIZED-1.md`) |
 
 ---
 
-## Architecture: ScoreNet
+## 2. Mathematical Bound: Absorbing-State Masked Diffusion (MDLM NELBO)
 
-A ~664K parameter noise-prediction MLP. No external ML library.
+Let $x_0 \in \{0, \dots, 255\}^L$ be a clean byte window of length $L$, and let $m = 256$ denote the `[MASK]` token. At continuous diffusion time $t \in (0, 1]$, the forward process $q(x_t \mid x_0, t)$ independently masks each non-fixed byte $x_0^{(i)}$ to $m$ with probability $\mu(t) = 1 - \alpha(t)$.
 
+- **Linear schedule (`linear`):** $\alpha(t) = 1 - t$, $\mu(t) = t$, weight $w(t) = -\alpha'(t)/(1 - \alpha(t)) = 1/t$.
+- **Cosine schedule (`cosine`):** $\alpha(t) = \cos(\pi t / 2)$, $\mu(t) = 1 - \cos(\pi t / 2)$, weight $w(t) = (\pi/2)\sin(\pi t / 2)/(1 - \cos(\pi t / 2))$.
+
+The denoiser outputs a 256-way categorical distribution $p_\theta(x_0^{(i)} \mid x_t, t, c)$ at each masked position $i \in M_t = \{i : x_t^{(i)} = m\}$, conditioned via Adaptive LayerNorm (AdaLN) on format embedding $e_{\text{fmt}}$, normalized bag-of-words tag embedding $e_{\text{sem}}$, and sinusoidal time embedding $e_t$. The continuous-time negative evidence lower bound (NELBO) in **bits per byte (bpb)** is:
+
+$$\mathcal{L}_{\text{NELBO}}(x_0;\theta) = \mathbb{E}_{t \sim \mathcal{U}(0, 1),\, x_t \sim q(\cdot \mid x_0, t)} \left[ \frac{w(t)}{L \ln 2} \sum_{i \in M_t} -\ln p_\theta\!\left(x_0^{(i)} \mid x_t, t, c\right) \right] \ge -\frac{1}{L}\log_2 p_\theta(x_0)$$
+
+---
+
+## 3. Model Presets & Parameter Counts
+
+All three presets run 100% offline in a single browser tab (with optional inline `MicroWAT` / `WasmKernels` SIMD acceleration and automatic plain-JS fallback):
+
+- **Phone (`phone`):** `2` layers, `dModel = 64`, `nHeads = 4`, `dFF = 128` — **`214,036` parameters** (`1,116 KB` `.fabula` file, `~52 ms/step`).
+- **Laptop (`laptop`):** `3` layers, `dModel = 128`, `nHeads = 4`, `dFF = 256` — **`722,132` parameters** (`3,762 KB` `.fabula` file, `~298 ms/step`).
+- **Patient (`patient`):** `4` layers, `dModel = 192`, `nHeads = 6`, `dFF = 384` — **`1,732,372` parameters** (`9,024 KB` `.fabula` file, `~600 ms/step`).
+
+Legacy v0.1/v0.2 `.fabula` weight files are detected by their version header and **rejected gracefully** with an explanatory toast banner without crashing the app.
+
+---
+
+## 4. Inlined Studio Code & Provenance
+
+Every piece of inlined studio code in `index.html` carries an explicit provenance header comment:
+- `/* from MicroWAT microwat.js v2.0.0, MicroWAT.assemble() */` — zero-dependency WAT-to-WASM assembler (scalar + 128-bit `v128` SIMD).
+- `/* from Simulacra/OmniVocal kernels.js v0.2.0, WasmKernels */` — SIMD/WASM/JS matrix-vector & activation kernels.
+- `/* from AuraGraph app.html v0.3.1 (TILE-FORMAT v0.4), mulberry32() & fnv1a32() */` — deterministic PRNG and FNV-1a seed hashing.
+- `/* from Simulacra v0.2 / OmniVocal v0.1, Linear / LayerNorm / Adam / AdaLN, extended to multi-token & WasmKernels */` — autodiff layers.
+- `/* from AuraGraph app.html v0.3.1 (TILE-FORMAT v0.4), fftOf(), PLAN, analyzeCore(), finalizeAnalyze(), analyzeSync(), buildHelixData(), LUT, drawHelixStripRGBA(), CRC_T, crc32(), makePngChunk(), pngWithMeta(), pngReadMeta(), meanRiseTimeMs(), evaluateMetrics() */` — real AuraGraph tile encoder, PNG `tEXt` chunk writer/reader, and Timing Helix extractor.
+- `/* from AuraLoom index.html v0.5 (TILE-FORMAT v0.4), invertGhost(), invertHelix(), pixLevel() */` — real AuraLoom Ghost (Griffin-Lim) and Helix (phase-tethered ISTFT) audio decoders.
+- `/* from Once Bytten v0.1, SpikeVox */` — legacy LIF spike-rate audio encoder (retained as a labelled legacy option).
+- `/* from FPSS v0.2, shannonEntropy() & rosaRatio() */` — statistical validation metrics.
+
+---
+
+## 5. Running the App and Test Suite
+
+### In the Browser
+Open `index.html` directly from disk (`file://`) on desktop or mobile. Zero network requests, zero external scripts or fonts.
+1. **Corpus Tab:** Load the built-in seeded multi-format test corpus (or *Sherlock Holmes* excerpt), or drop your own `.txt`, `.html`, `.json`, `.svg`, `.js`, `.c`, `.bmp`, `.wav`, or `.aura.png` files with custom tags.
+2. **Train Tab:** Pick a preset (`Phone`, `Laptop`, `Patient`), noise schedule (`linear` or `cosine`), kernel backend (`Auto SIMD/WASM/JS`), and seed. Monitor the training NELBO (`bpb`), held-out validation NELBO (`bpb`), and Unigram / Bigram / Order-4 Kneser-Ney baselines live. Pause, resume, or export `.fabula` weights mid-run.
+3. **Generate Tab:** Choose any format, audio path (`8-bit μ-law`, `AuraGraph Tile + Helix`, `AuraGraph Tile + Ghost`, or legacy `SpikeVox`), unmasking strategy (`Confidence-ordered` or `Random`), optional low-confidence re-masking, and optional **Infilling** template. Export `.wav`, `.aura.png` (opens directly in AuraLoom v0.5), `.bmp`, or text/code files.
+4. **Validate Tab:** Inspect compiler/parser diagnostics (`JSON.parse`, `DOMParser`, Worker `new Function`, C syntax check, BMP/WAV structure), Shannon entropy, ROSA bigram ratio, LCS memorisation fraction, and trigger **Repair by Re-Masking**.
+
+### Headless Node Verification & Benchmarks
+```bash
+# 1. Analytical vs. Finite-Difference Gradient Check (Float64, 52/52 tensors at cos = 1.000000)
+node tests/gradcheck.js
+
+# 2. Bit-for-Bit Determinism, .fabula v0.2 Rejection / v0.3 Round-Trip, and JS/WASM/SIMD Equivalence
+node tests/determinism.js
+
+# 3. Full Tier 4 Empirical Evaluation Suite (outputs tests/metrics-results.json)
+node tests/metrics.js
 ```
-Input: [noisy_chunk(256) | timestep_emb(64) | format_emb(16) | semantic_emb(32)] → 368-dim
-  LayerNorm
-  Linear(368 → 512)
-  AdaLN conditioning: shift + scale from Linear(48 → 512) on [format_emb | semantic_emb]
-  SiLU
-  LayerNorm
-  Linear(512 → 512)
-  SiLU
-  LayerNorm
-  Linear(512 → 256) → predicted noise ε
-```
-
-**Diffusion:** DDPM (Ho et al. 2020). Linear schedule, β₁=1e-4 → β_T=0.02, T=200.
-**Optimizer:** Adam (β₁=0.9, β₂=0.999, lr=1e-4).
-**Conditioning:** format as learned dense embedding; semantic tags as mean-pooled bag-of-words over a 256-word vocabulary; timestep as sinusoidal embedding.
-
----
-
-## Semantic Tags
-
-Type comma or space-separated tags when generating. Recognized vocabulary covers:
-
-- **Tone/mood:** `upbeat dark moody bright intense gentle calm aggressive playful mysterious`
-- **Color (BMP):** `red green blue yellow purple orange teal warm cool vivid muted`
-- **Audio (WAV):** `bass treble jazz classical electronic ambient percussion melody rhythm noise`
-- **Text (TXT/HTML):** `formal casual technical poetic minimal calculator game dashboard tool`
-- **Style:** `retro modern geometric organic dense sparse layered flat`
-- **...and ~200 more**
-
-Unknown tags are hashed into the embedding space — they still condition the model, just without a pre-learned direction.
-
----
-
-## Weight Files (`.fabula`)
-
-Export and import trained weights via the Model tab. Format:
-
-```json
-{
-  "version": "0.1",
-  "steps": 12400,
-  "config": { "T": 200, "chunk": 256, "hid": 512, "vocab": 256 },
-  "weights": { "...": "base64 Float32Arrays" }
-}
-```
-
-Share `.fabula` files to distribute trained models. Load one to continue training or generate immediately.
-
----
-
-## Integration Map
-
-| Component | Source |
-|-----------|--------|
-| `Linear` (forward + backward) | Simulacra — ConsciousNode |
-| `LayerNorm` (forward + backward) | Simulacra — ConsciousNode |
-| `Adam` optimizer | Simulacra — ConsciousNode |
-| AdaLN conditioning pattern | OmniVocal — ConsciousNode |
-| `ElasticTok` spatial patch encoding | FPSS — ConsciousNode (Kehai Interim) |
-| `SpikeVox` LIF audio encoding | FPSS — ConsciousNode (Kehai Interim) |
-| `shannonEntropy` | Once Bytten — ConsciousNode |
-| ROSA structural ratio | Once Bytten / Simulacra — ConsciousNode |
-| Magic byte validation | Once Bytten — ConsciousNode |
-| DDPM diffusion math | Ho et al. 2020 |
-
-No new ML primitives. The ConsciousNode catalog assembling itself.
-
----
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for full version history.
-
-**v0.2.2** — Debug panel: live console, gradient health canvas, generation journal, format step distribution, optimizer state.  
-**v0.2.1** — Critical backward pass fix (l2/ln2 order was inverted — primary cause of non-convergence). DDIM deterministic sampling toggle. Live LR control. Best practices guide.  
-**v0.2** — ScoreNet v0.2 (4-layer, 768-dim, dual AdaLN, ~1.54M params). ElasticTok BMP encoding. SpikeVox WAV encoding. HTML iframe preview. WAV Web Audio playback. ⚠ breaks v0.1 `.fabula` compatibility.  
-**v0.1.x** — OLA seam fix, per-file tagging, dynamic corpus, DDPM Algorithm 2 form, TXT truncation fix, corpus warnings.  
-**v0.1** — Initial release.
-
----
-
-## Roadmap
-
-| Version | Target |
-|---------|--------|
-| **v0.1** | TXT + HTML + BMP + WAV · ScoreNet · DDPM · validation · `.fabula` I/O ✓ |
-| **v0.1.x** | OLA seam fix · per-file tagging · dynamic corpus · bug fixes ✓ |
-| **v0.2** | ElasticTok (BMP) · SpikeVox (WAV) · 4-layer ScoreNet · debug panel ✓ |
-| **v0.3** | Compiler-as-validator — generate source → compile → result as validation signal |
-| **v0.4** | Compiler feedback loop — error messages as fine-tuning signal |
-| **v0.5** | PNG (uncompressed RGB diffusion, zlib on export) · multi-format co-training |
-| **v0.6** | Transfer: Simulacra RWKV state as text conditioning for TXT/HTML |
-| *research* | **EXE via compiled source** — diffuse source code, compile to binary. The binary was never the goal; the *program* was. |
-
-### The EXE reframe
-
-The original EXE target assumed binary diffusion — valid space too narrow, header synthesis too hard. The correct path: train on source code (TXT tier, already supported) → compiler validates output → compiler errors become fine-tuning signal → compile to binary as post-generation step. The EXE goal was always a code generation problem wearing a diffusion model's clothes.
-
-### ElasticTok + SpikeVox
-
-**ElasticTok (BMP):** 8×8px spatial patch chunking preserves 2D image topology. Each chunk encodes one patch: 192 RGB floats + normalized (row, col) position at slots [192, 193]. The model sees patch position twice — in the input chunk AND in the conditioning vector. Ported from FPSS (Kehai Interim).
-
-**SpikeVox (WAV):** LIF (leaky integrate-and-fire) audio encoding converts PCM to spike-rate feature vectors. Parameters: threshold=3.5, leakRate=0.95, refractoryPeriod=2. Decode: log-spaced sinusoidal band synthesis. The cochlea does something structurally similar. Ported from FPSS (Kehai Interim).
-
----
-
-## Philosophy
-
-Xinu-compliant. The browser is bare metal. A file is a byte sequence with statistical structure. Diffusion learns statistical structure. Therefore: one model architecture, trained in your browser, on your files, generating new ones — across any format whose valid space is wide enough to sample from.
-
-No install. No server. No upload. Works offline. Works on the phone in your pocket. Opens as a text file. Flash was a tenant. ConsciousNode builds on land it owns.
-
----
-
-## Credits
-
-**Kham** (Khamerron Ramsey Kizer) — concept, architecture, direction
-**Ed Interim** — implementation
-**Kehai Interim** — Simulacra ML stack (Linear, LayerNorm, Adam)
-**Vael Interim** — OmniVocal AdaLN conditioning pattern
-
-Validation layer adapted from **Once Bytten** (Ed Interim).
-DDPM: Ho et al., "Denoising Diffusion Probabilistic Models," NeurIPS 2020.
-
----
-
-## License
-
-MIT — See [LICENSE](LICENSE)
-
-*ConsciousNode SoftWorks · consciousnode.github.io*
+See [research/REALIZED-1.md](https://www.google.com/search?q=research/REALIZED-1.md) for the complete tables, methodology, and findings.
