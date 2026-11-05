@@ -2,6 +2,14 @@
 
 **One model that learns any file in a single offline browser tab — made real with Masked Byte Diffusion, 2-D Patch Tokens, Dual-Path Audio (8-bit μ-law & AuraGraph v0.3.1 Tiles + Timing Helix), and Compiler-as-Validator Repair.**
 
+> **v0.3.1 audit note (2026-11-04).** Everything below the line describes what v0.3 *is*, and the engine is real and
+> verified (gradients, determinism, kernels). But the v0.3.0 results were inflated: repair fell back to copying
+> training files, generation started from training files by default, and the audio comparison was unequal. Those
+> paths are now off (repair is model-only; "Remix a training file" is an explicit, labelled option), and the
+> honest numbers are in [research/AUDIT-1.md](research/AUDIT-1.md). In short: after a short train the model can't
+> yet write parseable markup or code on its own, the count memory beats the transformer on Sherlock, and μ-law
+> beats tiles when both get the same job.
+
 ---
 
 ## 1. What Changed in v0.3 ("Realized")
@@ -44,9 +52,9 @@ $$\mathcal{L}_{\text{NELBO}}(x_0;\theta) = \mathbb{E}_{t \sim \mathcal{U}(0, 1),
 
 All three presets run 100% offline in a single browser tab (with optional inline `MicroWAT` / `WasmKernels` SIMD acceleration and automatic plain-JS fallback):
 
-- **Phone (`phone`):** `2` layers, `dModel = 64`, `nHeads = 4`, `dFF = 128` — **`214,036` parameters** (`1,116 KB` `.fabula` file, `~52 ms/step`).
-- **Laptop (`laptop`):** `3` layers, `dModel = 128`, `nHeads = 4`, `dFF = 256` — **`722,132` parameters** (`3,762 KB` `.fabula` file, `~298 ms/step`).
-- **Patient (`patient`):** `4` layers, `dModel = 192`, `nHeads = 6`, `dFF = 384` — **`1,732,372` parameters** (`9,024 KB` `.fabula` file, `~600 ms/step`).
+- **Phone (`phone`):** `2` layers, `dModel = 64`, `nHeads = 4`, `dFF = 128` — **`214,036` parameters** (`1,116 KB` `.fabula` file, `~25–52 ms/step` depending on machine).
+- **Laptop (`laptop`):** `3` layers, `dModel = 128`, `nHeads = 4`, `dFF = 256` — **`722,132` parameters** (`3,762 KB` `.fabula` file, `~110–300 ms/step`).
+- **Patient (`patient`):** `4` layers, `dModel = 192`, `nHeads = 6`, `dFF = 384` — **`1,732,372` parameters** (`9,024 KB` `.fabula` file, `~225–600 ms/step`).
 
 Legacy v0.1/v0.2 `.fabula` weight files are detected by their version header and **rejected gracefully** with an explanatory toast banner without crashing the app.
 
@@ -77,7 +85,7 @@ Open `index.html` directly from disk (`file://`) on desktop or mobile. Zero netw
 
 ### Headless Node Verification & Benchmarks
 ```bash
-# 1. Analytical vs. Finite-Difference Gradient Check (Float64, 52/52 tensors at cos = 1.000000)
+# 1. Analytical vs. Finite-Difference Gradient Check (Float64, 53/53 checks at cos = 1.000000)
 node tests/gradcheck.js
 
 # 2. Bit-for-Bit Determinism, .fabula v0.2 Rejection / v0.3 Round-Trip, and JS/WASM/SIMD Equivalence
@@ -86,4 +94,9 @@ node tests/determinism.js
 # 3. Full Tier 4 Empirical Evaluation Suite (outputs tests/metrics-results.json)
 node tests/metrics.js
 ```
-See [research/REALIZED-1.md](https://www.google.com/search?q=research/REALIZED-1.md) for the complete tables, methodology, and findings.
+See [research/REALIZED-1.md](research/REALIZED-1.md) for Argon's v0.3.0 report and **[research/AUDIT-1.md](research/AUDIT-1.md) for the audit and corrected numbers**.
+
+```bash
+# 4. Audit: each experiment run the v0.3.0 way and the controlled way side by side
+node tests/audit-v03.js
+```

@@ -211,7 +211,7 @@ async function main() {
   console.log('3. WasmKernels Backend Equivalence: JS vs WASM vs SIMD');
   console.log('========================================================================');
   const K = Engine.WasmKernels.createSync({ pages: 16 });
-  console.log(`  Info  WasmKernels capabilities: hasWasm=${K.hasWasm}, hasSimd=${K.hasSimd}`);
+  console.log(`  Info  WasmKernels capabilities: wasm=${K.wasm}, simd=${K.simd}`);
 
   // Direct matvec_f32 check across js, wasm, simd
   const rows = 32, cols = 64;

@@ -1,0 +1,203 @@
+{
+  "sherlock": {
+    "splits": {
+      "totalBytes": 562404,
+      "trainBytes": 449923,
+      "valBytes": 56240,
+      "testBytes": 56241
+    },
+    "baselines": {
+      "val": {
+        "unigram": 4.441066535625294,
+        "bigram": 3.494970092870943,
+        "kn4": 2.262617267458286
+      },
+      "test": {
+        "unigram": 4.465234353461833,
+        "bigram": 3.5367321331976957,
+        "kn4": 2.322175572635692
+      }
+    },
+    "valSelection": {
+      "phoneLinear": 3.347949773442737,
+      "phoneCosine": 3.3062412993476586,
+      "laptopLinear": 3.6531547974221166,
+      "selected": "phone-cosine"
+    },
+    "testNELBO": {
+      "fullModelBpb": 3.455375125820678,
+      "transformerOnlyBpb": 5.07573677426188,
+      "byStratum": {
+        "0.1": 0.7889895826756052,
+        "0.2": 1.0029968778281328,
+        "0.3": 1.6601255470085932,
+        "0.4": 2.2652892911841795,
+        "0.5": 3.1917847818121756,
+        "0.6": 4.035409776521108,
+        "0.7": 5.1075885156453396,
+        "0.8": 6.0693479252960065,
+        "0.9": 6.976843834414965
+      }
+    }
+  },
+  "validity": {
+    "HTML": {
+      "rawValidRate": 0,
+      "repairedValidRate": 0,
+      "meanRepairAttempts": 3
+    },
+    "JSON": {
+      "rawValidRate": 0,
+      "repairedValidRate": 0,
+      "meanRepairAttempts": 3
+    },
+    "SVG": {
+      "rawValidRate": 0.2,
+      "repairedValidRate": 0.3,
+      "meanRepairAttempts": 2.3
+    },
+    "JS": {
+      "rawValidRate": 0,
+      "repairedValidRate": 0,
+      "meanRepairAttempts": 3
+    },
+    "C": {
+      "rawValidRate": 0,
+      "repairedValidRate": 0,
+      "meanRepairAttempts": 2.4,
+      "cCompilerUsed": "gcc -fsyntax-only -xc"
+    },
+    "BMP": {
+      "rawValidRate": 1,
+      "repairedValidRate": 1,
+      "meanRepairAttempts": 0
+    },
+    "WAV-uLaw": {
+      "rawValidRate": 1,
+      "repairedValidRate": 1,
+      "meanRepairAttempts": 0
+    },
+    "AuraTile": {
+      "rawValidRate": 1,
+      "repairedValidRate": 1,
+      "meanRepairAttempts": 0
+    }
+  },
+  "memorisation": {
+    "HTML": {
+      "meanLcsRatio": 0.13529458608980316,
+      "maxLcsRatio": 0.1871345029239766
+    },
+    "JSON": {
+      "meanLcsRatio": 0.1445807624097098,
+      "maxLcsRatio": 0.2894736842105263
+    },
+    "SVG": {
+      "meanLcsRatio": 0.2327567003132614,
+      "maxLcsRatio": 0.378698224852071
+    },
+    "JS": {
+      "meanLcsRatio": 0.3300350443207586,
+      "maxLcsRatio": 0.5858585858585859
+    },
+    "C": {
+      "meanLcsRatio": 0.3027935606060606,
+      "maxLcsRatio": 0.46875
+    },
+    "BMP": {
+      "meanLcsRatio": 0.10546875,
+      "maxLcsRatio": 0.10546875
+    },
+    "WAV-uLaw": {
+      "meanLcsRatio": 0.05666666666666666,
+      "maxLcsRatio": 0.056666666666666664
+    },
+    "AuraTile": {
+      "meanLcsRatio": 0.064453125,
+      "maxLcsRatio": 0.064453125
+    }
+  },
+  "propertyMatch": {
+    "htmlDepthAcc": 0.625,
+    "bmpShapeCountAcc": 0.75,
+    "bmpColorAcc": 1
+  },
+  "coTrainingVsSpecialist": {
+    "html": {
+      "specialistBpb": 0.9945067115600282,
+      "unifiedBpb": 0.9832183027566289,
+      "deltaBpb": -0.011288408803399319
+    },
+    "json": {
+      "specialistBpb": 1.3085634901764431,
+      "unifiedBpb": 1.21360955480575,
+      "deltaBpb": -0.09495393537069319
+    },
+    "bmp": {
+      "specialistBpb": 0.020445207393759702,
+      "unifiedBpb": 0.007362864362995489,
+      "deltaBpb": -0.013082343030764214
+    },
+    "wav": {
+      "specialistBpb": 1.8240779625483545,
+      "unifiedBpb": 1.8783062515591198,
+      "deltaBpb": 0.05422828901076526
+    }
+  },
+  "audioComparison": {
+    "codecRoundTrip": {
+      "muLawPitchErrCents": 14.450153894442078,
+      "tilePitchErrCents": 11.742713627961702,
+      "muLawPitchMatchRate": 1,
+      "tilePitchMatchRate": 1,
+      "muLawTempoErrPct": 0,
+      "tileTempoErrPct": 11.770833333333332
+    },
+    "regenerate30pctWholeClip": {
+      "muLawPitchMatchRate": 1,
+      "tilePitchMatchRate": 0.5,
+      "muLawTempoErrPct": 0,
+      "tileTempoErrPct": 12.800925925925926
+    },
+    "codecOnlyOnsetRiseTimeMs": {
+      "muLawMs": 2.4137331581669668,
+      "auraTileGhostMs": 12.205281385874253,
+      "auraTileHelixMs": 4.77228784489121,
+      "helixSharpeningOverGhostPct": 60.899813007061
+    },
+    "codecOnlyWaveformSnrDb": {
+      "ghostDb": -0.03430324141006153,
+      "helixDb": 0.06166976629165753,
+      "helixGainDb": 0.09597300770171907
+    }
+  },
+  "speedBench": {
+    "phone": {
+      "params": 214036,
+      "fabulaKB": 1116,
+      "msPerStepSimd": 24.06,
+      "msPerStepJS": 26.18,
+      "msPerStepPhoneEstimate_JSx4_notMeasured": 104.73,
+      "msPerSampleDesktop": 61.11,
+      "msPerSamplePhoneEstimate_x4_notMeasured": 244.43
+    },
+    "laptop": {
+      "params": 722132,
+      "fabulaKB": 3762,
+      "msPerStepSimd": 108.12,
+      "msPerStepJS": 115.92,
+      "msPerStepPhoneEstimate_JSx4_notMeasured": 463.66,
+      "msPerSampleDesktop": 245.2,
+      "msPerSamplePhoneEstimate_x4_notMeasured": 980.82
+    },
+    "patient": {
+      "params": 1732372,
+      "fabulaKB": 9024,
+      "msPerStepSimd": 225.2,
+      "msPerStepJS": 325.65,
+      "msPerStepPhoneEstimate_JSx4_notMeasured": 1302.59,
+      "msPerSampleDesktop": 745.09,
+      "msPerSamplePhoneEstimate_x4_notMeasured": 2980.36
+    }
+  }
+}

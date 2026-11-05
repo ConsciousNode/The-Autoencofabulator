@@ -1,3 +1,11 @@
+> **⚠ Audited 2026-11-04. Read [AUDIT-1.md](AUDIT-1.md) before citing anything here.** This is Argon's report as
+> delivered with v0.3.0. Its headline results came from training files copied in by the repair fallback and the
+> default generation anchors, from 384 scored test bytes, and from an audio test that gave the two paths different
+> jobs. Corrected: Sherlock test 3.46 bpb (the count memory alone gets 3.10; KN4 2.32); model-only repair takes
+> HTML/JSON/JS/C from 0% to 0% and SVG from 20% to 30%; under the same task μ-law beats tiles on pitch (100% vs 50%) and tempo (0% vs 12.8% error).
+> What holds: gradients (53/53), determinism, kernel equivalence, co-training direction (§6), and the Helix-over-Ghost
+> onset sharpening as a codec property.
+
 # REALIZED-1: Empirical Evaluation of Masked Byte Diffusion Across Text, Markup, Code, 2-D Patch Images, and Dual-Path Audio in a Browser Tab
 
 **Project:** The Autoencofabulator v0.3 ("Realized")  

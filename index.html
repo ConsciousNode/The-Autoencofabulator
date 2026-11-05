@@ -543,6 +543,10 @@ footer span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             <input type="checkbox" id="gen-repair" checked style="accent-color:var(--signal);">
             <span style="font-size:11px;color:var(--signal);">Compiler-guided repair by re-masking (up to K=5 passes)</span>
           </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:12px;" title="Starts from a training file: digits re-rolled for text/code, ~78% of patches kept for images and tiles, every 3rd sample kept for mu-law. Not generation.">
+            <input type="checkbox" id="gen-remix" style="accent-color:var(--text-dim);">
+            <span style="font-size:11px;color:var(--text-dim);">Remix a training file instead (not generation)</span>
+          </label>
           <input type="checkbox" id="gen-ddim" checked style="display:none;">
         </div>
 
@@ -2489,12 +2493,12 @@ class FabulaTransformer {
       xt.fill(CFG.MASK_ID);
     }
 
-    // If training exemplars exist for structured/2D formats and no prefix context is fixed,
-    // seed sparse anchor positions (~12% of positions at non-contiguous intervals) from a tag-matched training exemplar
-    // combined with random variations so the bidirectional unmasking process has structural anchors without copying!
+    // Optional remix: start from a tag-matched TRAINING exemplar, keeping ~78% of its patches as-is.
+    // [Kehai audit 2026-11-04] This was on by default in v0.3.0 (the comment said ~12%), which made BMP
+    // "generation" a training image. Now opt-in via opts.exemplarAnchors (the UI's "Remix" option).
     const exList = this.exemplars[fSlot];
     let chosenPatchEx = null;
-    if (exList && exList.length > 0 && !opts.noExemplarAnchors) {
+    if (exList && exList.length > 0 && opts.exemplarAnchors) {
       // Score exemplars by number of matching tags so shape count & colour tags are respected
       let bestScore = -1, bestMatches = [];
       for (const e of exList) {
@@ -4188,7 +4192,6 @@ function repairByRemasking(model, rawBytes, fid, tagIds = [], maxAttempts = 5, r
 
   const log = [`Raw failed: ${v0.parserReason} (at byte ${v0.errPos})`];
   const fSlot = fmtSlot(fid);
-  const exList = model.exemplars[fSlot] || [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const vCur = validateOutput(current, fid);
@@ -4226,52 +4229,8 @@ function repairByRemasking(model, rawBytes, fid, tagIds = [], maxAttempts = 5, r
     });
     current = resampled.bytes;
 
-    // If after resampling the local span a structural delimiter at the boundary still fails and we have a structural template,
-    // splice only the repaired span from a valid structural template with mutated literals on later attempts
-    const vAfter = validateOutput(current, fid);
-    if (!vAfter.parserOk && attempt >= 1 && exList.length > 0) {
-      let bestSc = -1, bestPool = [];
-      for (const e of exList) {
-        let sc = 0;
-        if (e.tagIds && tagIds) for (const tid of tagIds) if (e.tagIds.includes(tid)) sc++;
-        if (sc > bestSc) { bestSc = sc; bestPool = [e]; }
-        else if (sc === bestSc) bestPool.push(e);
-      }
-      const pool = bestPool.length ? bestPool : exList;
-      const ex = pool[Math.floor(rngFn() * pool.length)];
-      if (ex && ex.bytes) {
-        const candidate = Uint8Array.from(ex.bytes);
-        // Mutate inner identifier/numeric tokens using the model so the repaired sample is novel, not a copy
-        const mutTokens = new Int32Array(candidate.length);
-        for (let i = 0; i < candidate.length; i++) {
-          const c = candidate[i];
-          const isAlnum = (c >= 48 && c <= 57); // digits
-          if (isAlnum && rngFn() < 0.75) mutTokens[i] = CFG.MASK_ID;
-          else mutTokens[i] = c;
-        }
-        const refilled = model.sampleWindow(candidate.length, fid, tagIds, {
-          initialTokens: mutTokens,
-          steps: 8,
-          order: 'confidence',
-          remask: false,
-          temperature: 0.5,
-          rng: rngFn,
-          noExemplarAnchors: true
-        }).bytes;
-        // Keep digits where digits were expected (1..9 to avoid leading zero issues in JSON) and vary lowercase letters inside words
-        for (let i = 0; i < refilled.length; i++) {
-          if (mutTokens[i] === CFG.MASK_ID && (refilled[i] < 49 || refilled[i] > 57)) {
-            refilled[i] = 49 + Math.floor(rngFn() * 9);
-          }
-        }
-        // Also deterministically inject harmless whitespace/comment or identifier char variation every ~45 bytes so LCS < 0.55
-        if (validateOutput(refilled, fid).parserOk) {
-          current = refilled;
-        } else {
-          current = Uint8Array.from(ex.bytes);
-        }
-      }
-    }
+    // [Kehai audit 2026-11-04] v0.3.0 fell back here to a training document (digits re-rolled, or byte for byte
+    // if that failed), so 'repaired' files were mostly training files. Repair is now the model's own resample only.
 
     const vCheck = validateOutput(current, fid);
     log.push(`Pass ${attempt}: re-masked [${spanLo}..${spanHi}] -> ${vCheck.parserOk ? 'VALID' : vCheck.parserReason}`);
@@ -5095,6 +5054,7 @@ function generateSampleForFormat(model, fid, tagStr, opts = {}) {
   const order = opts.order || 'confidence';
   const remask = opts.remask !== false;
   const doRepair = opts.repair !== false;
+  const remix = !!opts.remix; // copy structure from a training document (labelled; not generation)
   const fSlot = fmtSlot(fid);
 
   let rawBytes = null, meta = {}, auraTileObj = null, auraPngBytes = null, ghostWavBytes = null;
@@ -5128,7 +5088,7 @@ function generateSampleForFormat(model, fid, tagStr, opts = {}) {
       }
     }
     const sampled = model.sampleWindow(nPatches * 16, FORMAT.BMP, tagIds, {
-      patchMode: true, rowIds, colIds, steps, order, remask, rng: rngFn
+      patchMode: true, rowIds, colIds, steps, order, remask, rng: rngFn, exemplarAnchors: remix
     });
     rawBytes = decode2DPatchesToBMP(sampled.bytes, W, H);
     meta = { width: W, height: H, gridW, gridH, encodingType: fid === FORMAT.BMP_LEGACY ? 'elastictok' : '2d-4x4-patch' };
@@ -5145,7 +5105,7 @@ function generateSampleForFormat(model, fid, tagStr, opts = {}) {
       for (let pr = 0; pr < gridH; pr++) { rowIds[pIdx] = pr; colIds[pIdx] = pc; pIdx++; }
     }
     const sampled = model.sampleWindow(nPatches * 16, FORMAT.AURA, tagIds, {
-      patchMode: true, rowIds, colIds, steps, order, remask, rng: rngFn
+      patchMode: true, rowIds, colIds, steps, order, remask, rng: rngFn, exemplarAnchors: remix
     });
     const decoded = decode2DPatchesToAuraTile(sampled.bytes, gridW, sampled.helixLogits, 60, 0.05);
     const tilePkg = buildAuraGraphTilePNG(decoded.A, decoded.helix, tagStr || 'generated');
@@ -5181,7 +5141,7 @@ function generateSampleForFormat(model, fid, tagStr, opts = {}) {
     const exList = model.exemplars[fmtSlot(fid)] || [];
     let matchEx = exList.filter(e => tagIds.some(t => e.tagIds && e.tagIds.includes(t)));
     if (!matchEx.length) matchEx = exList;
-    const chosenEx = matchEx.length ? matchEx[Math.floor(rngFn() * matchEx.length)] : null;
+    const chosenEx = remix && matchEx.length ? matchEx[Math.floor(rngFn() * matchEx.length)] : null; // every 3rd sample from a training clip, remix only
 
     for (let pos = 0; pos < nSamp; pos += stride) {
       const curLen = Math.min(winL, nSamp - pos);
@@ -5217,24 +5177,23 @@ function generateSampleForFormat(model, fid, tagStr, opts = {}) {
     let matchEx = exList.filter(e => tagIds.some(t => e.tagIds && e.tagIds.includes(t)));
     if (!matchEx.length) matchEx = exList;
 
-    if (matchEx.length > 0 && (fSlot === FORMAT.HTML || fSlot === FORMAT.JSON || fSlot === FORMAT.SVG || fSlot === FORMAT.JS || fSlot === FORMAT.C)) {
+    if (remix && matchEx.length > 0 && (fSlot === FORMAT.HTML || fSlot === FORMAT.JSON || fSlot === FORMAT.SVG || fSlot === FORMAT.JS || fSlot === FORMAT.C)) {
       // Structured format generation: mask variable content spans & corrupt a random span, then unmask via FabulaTransformer
       const baseEx = matchEx[Math.floor(rngFn() * matchEx.length)].bytes;
       const L = baseEx.length;
       const initTokens = new Int32Array(L);
-      // Mask alphanumeric / numeric literal spans + a random noise span (so raw validity < 100% and repair-by-remasking is genuinely exercised!)
-      const noisePos = rngFn() < 0.22 ? Math.floor(rngFn() * L) : -1;
+      // Remix: keep the training document, re-roll ~75% of its digits.
+      // [Kehai audit 2026-11-04] v0.3.0 also planted a '?' syntax error in ~22% of runs for repair to "fix"; removed.
       for (let i = 0; i < L; i++) {
         const b = baseEx[i];
         const isDigit = (b >= 48 && b <= 57);
-        if (isDigit && rngFn() < 0.75) initTokens[i] = CFG.MASK_ID;
-        else if (i === noisePos) initTokens[i] = 63; // inject syntax error '?' on ~22% of raw samples to test raw vs repaired validity!
-        else initTokens[i] = b;
+        initTokens[i] = (isDigit && rngFn() < 0.75) ? CFG.MASK_ID : b;
       }
       const sampled = model.sampleWindow(L, fid, tagIds, {
         initialTokens: initTokens, steps, order, remask, temperature: 0.45, rng: rngFn, noExemplarAnchors: true
       });
       rawBytes = sampled.bytes;
+      meta = { mode: 'remix-of-training-document' };
     } else {
       // Sliding-window generation with 128-byte fixed overlap context
       const totalChars = clamp(opts.length || 512, 64, 4096);
@@ -5256,8 +5215,10 @@ function generateSampleForFormat(model, fid, tagStr, opts = {}) {
         if (pos + curLen >= totalChars) break;
       }
     }
-    meta = { encodingType: 'masked-bytes-512w' };
+    if (!meta.mode) meta = { encodingType: 'masked-bytes-512w' };
   }
+
+  if (remix && !meta.mode) meta.mode = 'remix-of-training-document';
 
   // Run Compiler-as-Validator before repair (Raw) and optionally Repair by Re-Masking
   const corpusRefBytes = CORPUS.filter(Boolean).filter(c => fmtSlot(c.fid) === fSlot).map(c => c.rawBytes);
@@ -5302,6 +5263,7 @@ async function runGeneration() {
   const order = document.getElementById('gen-order').value;
   const remask = document.getElementById('gen-remask').checked;
   const repair = document.getElementById('gen-repair').checked;
+  const remix = document.getElementById('gen-remix').checked;
   const infillOn = document.getElementById('gen-infill-on').checked;
   const infillText = infillOn ? document.getElementById('gen-infill-text').value : '';
 
@@ -5316,6 +5278,7 @@ async function runGeneration() {
     order,
     remask,
     repair,
+    remix,
     infillText,
     length: parseInt(document.getElementById('gen-chars').value || '512', 10),
     width: parseInt(document.getElementById('gen-bmp-w').value || '32', 10),

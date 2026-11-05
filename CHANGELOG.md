@@ -1,5 +1,30 @@
 # Changelog — The Autoencofabulator
 
+## v0.3.1 — Audit (2026-11-04)
+
+Kehai's audit of Argon's v0.3.0. Full findings and corrected numbers: `research/AUDIT-1.md`.
+
+- **Repair is model-only.** `repairByRemasking` no longer falls back to a training document (digits re-rolled, or
+  byte for byte). All of v0.3.0's "100% repaired" HTML/JSON/SVG/JS files came from that fallback.
+- **Generation no longer starts from training files by default.** `sampleWindow`'s exemplar anchors (≈78% of a
+  training image's patches kept) are opt-in. The text/code template path, the μ-law every-third-sample anchors and
+  the patch anchors are now behind a new, labelled **"Remix a training file instead (not generation)"** option.
+  The planted `?` syntax error is removed.
+- **`tests/metrics.js` measures what it says:** 100 val / 300 test windows (was 5 / 6), held-out scaffolds and
+  held-out co-training scores (were training documents), both audio paths regenerating the same 30% of the whole
+  clip (was 2 of 16 tile columns vs 23 ms of μ-law), codec-only rows labelled, phone timings labelled as ×4
+  estimates. The Argon-sandbox corpus path is removed.
+- **New `tests/audit-v03.js`:** each experiment the v0.3.0 way and the controlled way, side by side, with a
+  `--engine` switch to run the delivered `index.html`.
+- `sherlock-holmes-corpus.txt` added (public domain), so the suite runs from a clone.
+- `tests/determinism.js` prints the real WASM/SIMD flags (it printed `undefined`). README's REALIZED-1 link fixed.
+- `research/REALIZED-1.md` kept as delivered, with an audit banner.
+
+Corrected headline numbers: Sherlock test 3.4554 bpb (KN4 2.3222; count memory alone 3.1033); model-only validity
+HTML 0→0%, JSON 0→0%, SVG 20→30%, JS 0→0%, C 0→0%; same-task audio: μ-law 100% pitch / 0.0% tempo error, tiles
+50% / 12.8%. Holding: gradcheck 53/53, determinism, kernel equivalence, co-training direction, Helix-over-Ghost
+onset sharpening (codec).
+
 ## v0.3.0 — "Realized" (2026-11-04)
 
 ### Tier 1: Masked Byte Diffusion & Bidirectional Transformer

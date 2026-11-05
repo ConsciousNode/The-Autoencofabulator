@@ -41,7 +41,6 @@ function resolveIndexHtml() {
 function resolveSherlockCorpus() {
   const candidates = [
     path.join(__dirname, '..', 'sherlock-holmes-corpus.txt'),
-    '/working_dir/c_94f95782a348c4a5/user_uploaded_files/ttl=63d/user_uploaded/sherlock-holmes-corpus.txt',
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
@@ -129,7 +128,7 @@ async function main() {
       const win = train.subarray(start, start + winLen);
       model.trainStep(win, fSlot, tagIds, { rng, skipMemoryUpdate: true, fastTrainStep: true, useKernel: true });
     }
-    const valEval = model.evaluateNELBO(val, fSlot, tagIds, { windowSize: 64, maxWindows: 5, seed: 202 });
+    const valEval = model.evaluateNELBO(val, fSlot, tagIds, { windowSize: 64, maxWindows: 100, seed: 202 });
     return { model, valEval, tagIds };
   }
 
@@ -150,16 +149,17 @@ async function main() {
 
   const bestCand = candidates[0];
   Engine.CFG.SCHEDULE = bestCand.schedule;
+  // [Kehai audit] v0.3.0 scored 6 windows (384 of 56,241 test bytes); now 300 windows (19,200 bytes)
   const testEval = bestCand.model.evaluateNELBO(test, Engine.FORMAT.TXT, bestCand.tagIds, {
     windowSize: 64,
-    maxWindows: 6,
+    maxWindows: 300,
     seed: 303,
   });
   const origGate = bestCand.model.ctxGate[Engine.FORMAT.TXT];
   bestCand.model.ctxGate[Engine.FORMAT.TXT] = -20.0;
   const testEvalNoMem = bestCand.model.evaluateNELBO(test, Engine.FORMAT.TXT, bestCand.tagIds, {
     windowSize: 64,
-    maxWindows: 6,
+    maxWindows: 300,
     seed: 303,
   });
   bestCand.model.ctxGate[Engine.FORMAT.TXT] = origGate;
@@ -195,6 +195,13 @@ async function main() {
   for (let i = 0; i < 8; i++) {
     suite.bmp.push(Generators.generateBMPSample(bmpRng, { size: 32, nShapes: 1 + (i % 3) }));
   }
+
+  // [Kehai audit] held-out documents, never trained on: v0.3.0 built its generation scaffolds from, and
+  // scored co-training on, the training documents themselves
+  const heldOut = Generators.buildSeededSuite(97531, 6);
+  const hbRng = Generators.mulberry32(97531);
+  heldOut.bmp = [];
+  for (let i = 0; i < 6; i++) heldOut.bmp.push(Generators.generateBMPSample(hbRng, { size: 32, nShapes: 1 + (i % 3) }));
 
   const unifiedRng = Engine.mulberry32(4242);
   const unifiedModel = new Engine.FabulaTransformer('phone', unifiedRng);
@@ -244,11 +251,11 @@ async function main() {
   const validityStats = {};
   const lcsStats = {};
   const formatsToTest = [
-    { name: 'HTML',     fid: Engine.FORMAT.HTML,     docs: suite.html },
-    { name: 'JSON',     fid: Engine.FORMAT.JSON,     docs: suite.json },
-    { name: 'SVG',      fid: Engine.FORMAT.SVG,      docs: suite.svg },
-    { name: 'JS',       fid: Engine.FORMAT.JS,       docs: suite.js },
-    { name: 'C',        fid: Engine.FORMAT.C,        docs: suite.c },
+    { name: 'HTML',     fid: Engine.FORMAT.HTML,     docs: suite.html, scaffolds: heldOut.html },
+    { name: 'JSON',     fid: Engine.FORMAT.JSON,     docs: suite.json, scaffolds: heldOut.json },
+    { name: 'SVG',      fid: Engine.FORMAT.SVG,      docs: suite.svg,  scaffolds: heldOut.svg },
+    { name: 'JS',       fid: Engine.FORMAT.JS,       docs: suite.js,   scaffolds: heldOut.js },
+    { name: 'C',        fid: Engine.FORMAT.C,        docs: suite.c,    scaffolds: heldOut.c },
     { name: 'BMP',      fid: Engine.FORMAT.BMP,      docs: suite.bmp },
     { name: 'WAV-uLaw', fid: Engine.FORMAT.WAV_ULAW, docs: suite.wav },
     { name: 'AuraTile', fid: Engine.FORMAT.AURA,     docs: suite.wav },
@@ -262,7 +269,8 @@ async function main() {
 
     for (let i = 0; i < N_EVAL; i++) {
       const genRng = Engine.mulberry32(8000 + spec.fid * 100 + i);
-      const refDoc = spec.docs[i % spec.docs.length];
+      const pool = spec.scaffolds || spec.docs;
+      const refDoc = pool[i % pool.length];
       const tagIds = Engine.tagToIds(refDoc.tags);
       let rawFileBytes = null;
 
@@ -402,7 +410,7 @@ async function main() {
   console.log('========================================================================');
   function evalHeldOutFormatBpb(model, docs, fid) {
     let sumBpb = 0, count = 0;
-    for (let i = 0; i < Math.min(docs.length, 3); i++) {
+    for (let i = 0; i < docs.length; i++) {
       const d = docs[i];
       const tagIds = Engine.tagToIds(d.tags);
       let bytes = d.bytes;
@@ -445,8 +453,8 @@ async function main() {
         sModel.trainStep(doc.bytes, f.fid, tagIds, { rng: sRng, fastTrainStep: true });
       }
     }
-    const specBpb = evalHeldOutFormatBpb(sModel, f.docs, f.fid);
-    const uniBpb  = evalHeldOutFormatBpb(unifiedModel, f.docs, f.fid);
+    const specBpb = evalHeldOutFormatBpb(sModel, heldOut[f.key], f.fid);
+    const uniBpb  = evalHeldOutFormatBpb(unifiedModel, heldOut[f.key], f.fid);
     specResults[f.key] = { specialistBpb: specBpb, unifiedBpb: uniBpb, deltaBpb: uniBpb - specBpb };
     console.log(`  Format ${f.key.toUpperCase().padEnd(5)} Specialist: ${specBpb.toFixed(4)} bpb | Unified: ${uniBpb.toFixed(4)} bpb | Delta: ${(uniBpb - specBpb >= 0 ? '+' : '') + (uniBpb - specBpb).toFixed(4)} bpb`);
   }
@@ -508,57 +516,42 @@ async function main() {
     nDrums++;
   }
 
+  // [Kehai audit] v0.3.0 regenerated 30% of the first 80 tile patches (2 of 16 time columns; the rest of the tile
+  // was the real recording) against mu-law generating 489 of 512 samples (23 ms) and measuring tempo over that.
+  // Now both paths regenerate the same 30% of the WHOLE clip from the same model.
   let genMuPitchMatch = 0, genTilePitchMatch = 0;
   let genMuTempoErr = 0, genTileTempoErr = 0;
   const nGenWav = 6;
   for (let i = 0; i < nGenWav; i++) {
     const clip = suite.wav[i];
     const tagIds = Engine.tagToIds(clip.tags);
+    const rng = Engine.mulberry32(9500 + i);
+
     const A = Engine.agAnalyzeSync(clip.pcm, true);
     const helix = Engine.agBuildHelixData(clip.pcm, A, 0, A.F);
     const enc = Engine.encodeAuraTileTo2DPatches(A, helix);
-
-    const nP = Math.min(80, enc.rowIds.length);
-    const L = nP * 16;
-    const initTile = new Int32Array(L);
-    const rng = Engine.mulberry32(9500 + i);
-    for (let k = 0; k < L; k++) initTile[k] = rng() < 0.30 ? Engine.CFG.MASK_ID : enc.tokens[k];
-    const sampTile = unifiedModel.sampleWindow(L, Engine.FORMAT.AURA, tagIds, {
-      initialTokens: initTile,
-      patchMode: true,
-      rowIds: enc.rowIds.subarray(0, nP),
-      colIds: enc.colIds.subarray(0, nP),
-      steps: 3,
-      order: 'confidence',
-      rng,
+    const initTile = new Int32Array(enc.tokens.length);
+    for (let k = 0; k < initTile.length; k++) initTile[k] = rng() < 0.30 ? Engine.CFG.MASK_ID : enc.tokens[k];
+    const sampTile = unifiedModel.sampleWindow(initTile.length, Engine.FORMAT.AURA, tagIds, {
+      initialTokens: initTile, patchMode: true, rowIds: enc.rowIds, colIds: enc.colIds,
+      steps: 3, order: 'confidence', rng,
     });
-    const fullTokens = new Uint8Array(enc.tokens);
-    fullTokens.set(sampTile.bytes, 0);
-    const decTile = Engine.decode2DPatchesToAuraTile(fullTokens, enc.gridW, sampTile.helixLogits, enc.range, enc.ref);
-    const genTilePCM = Engine.agInvertHelix(decTile.A, decTile.helix, 0, decTile.A.F, 4);
-    const genTileAna = Generators.analyzeWAVProperties(genTilePCM, 22050);
+    const decTile = Engine.decode2DPatchesToAuraTile(sampTile.bytes, enc.gridW, sampTile.helixLogits, enc.range, enc.ref);
+    const genTileAna = Generators.analyzeWAVProperties(Engine.agInvertHelix(decTile.A, decTile.helix, 0, decTile.A.F, 4), 22050);
     if (Math.abs(genTileAna.midi - clip.meta.midi) <= 1) genTilePitchMatch++;
     genTileTempoErr += (Math.abs(genTileAna.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
 
-    // Compare 1-D μ-law generated window by window across 4 windows
-    const muRef = Engine.muLawEncodePCM(clip.pcm.subarray(0, 512));
-    const genMuBytes = new Uint8Array(512);
-    for (let w = 0; w < 4; w++) {
-      const winInit = new Int32Array(128);
-      for (let k = 0; k < 128; k++) {
-        winInit[k] = (w > 0 && k < 32) ? genMuBytes[(w - 1) * 128 + 96 + k] : (k < 24 && w === 0 ? muRef[k] : Engine.CFG.MASK_ID);
-      }
-      const sMu = unifiedModel.sampleWindow(128, Engine.FORMAT.WAV_ULAW, tagIds, {
-        initialTokens: winInit,
-        patchMode: false,
-        steps: 3,
-        order: 'confidence',
-        rng,
-      });
-      genMuBytes.set(sMu.bytes, w * 128);
+    const muRef = Engine.muLawEncodePCM(clip.pcm);
+    const genMuBytes = new Uint8Array(muRef.length);
+    for (let off = 0; off < muRef.length; off += 128) {
+      const L = Math.min(128, muRef.length - off);
+      const winInit = new Int32Array(L);
+      for (let k = 0; k < L; k++) winInit[k] = rng() < 0.30 ? Engine.CFG.MASK_ID : muRef[off + k];
+      genMuBytes.set(unifiedModel.sampleWindow(L, Engine.FORMAT.WAV_ULAW, tagIds, {
+        initialTokens: winInit, patchMode: false, steps: 3, order: 'confidence', rng,
+      }).bytes, off);
     }
-    const genMuPCM = Engine.muLawDecodeToPCM(genMuBytes);
-    const genMuAna = Generators.analyzeWAVProperties(genMuPCM, 22050);
+    const genMuAna = Generators.analyzeWAVProperties(Engine.muLawDecodeToPCM(genMuBytes), 22050);
     if (Math.abs(genMuAna.midi - clip.meta.midi) <= 1) genMuPitchMatch++;
     genMuTempoErr += (Math.abs(genMuAna.bpm - clip.meta.bpm) / clip.meta.bpm) * 100;
   }
@@ -572,32 +565,33 @@ async function main() {
       muLawTempoErrPct: muTempoErrPct / nDrums,
       tileTempoErrPct: tileTempoErrPct / nDrums,
     },
-    generativeMultiWindow: {
+    regenerate30pctWholeClip: {
       muLawPitchMatchRate: genMuPitchMatch / nGenWav,
       tilePitchMatchRate: genTilePitchMatch / nGenWav,
       muLawTempoErrPct: genMuTempoErr / nGenWav,
       tileTempoErrPct: genTileTempoErr / nGenWav,
     },
-    onsetSharpnessRiseTimeMs: {
+    codecOnlyOnsetRiseTimeMs: { // codec round trips of the source clips, no model involved
       muLawMs: muRiseMsSum / nAudio,
       auraTileGhostMs: ghostRiseMsSum / nAudio,
       auraTileHelixMs: helixRiseMsSum / nAudio,
       helixSharpeningOverGhostPct: ((ghostRiseMsSum - helixRiseMsSum) / ghostRiseMsSum) * 100,
     },
-    singleRebuildWaveformSnrDb: {
+    codecOnlyWaveformSnrDb: {
       ghostDb: ghostSnrSum / nAudio,
       helixDb: helixSnrSum / nAudio,
       helixGainDb: (helixSnrSum - ghostSnrSum) / nAudio,
     },
   };
 
-  console.log(`  Multi-Window Generated Pitch Match: AuraGraph Tiles = ${((genTilePitchMatch / nGenWav) * 100).toFixed(1)}% vs. μ-law = ${((genMuPitchMatch / nGenWav) * 100).toFixed(1)}%`);
-  console.log(`  Multi-Window Generated Tempo Error: AuraGraph Tiles = ${(genTileTempoErr / nGenWav).toFixed(1)}% vs. μ-law = ${(genMuTempoErr / nGenWav).toFixed(1)}%`);
-  console.log(`  Mean Onset Rise Time (10%->90%, lower is sharper):`);
-  console.log(`    Path A (8-bit μ-law):              ${audioSummary.onsetSharpnessRiseTimeMs.muLawMs.toFixed(2)} ms`);
-  console.log(`    Path B (AuraGraph + Helix):        ${audioSummary.onsetSharpnessRiseTimeMs.auraTileHelixMs.toFixed(2)} ms`);
-  console.log(`    Path B (AuraGraph + Ghost):        ${audioSummary.onsetSharpnessRiseTimeMs.auraTileGhostMs.toFixed(2)} ms`);
-  console.log(`    Helix onset sharpening vs. Ghost:  ${audioSummary.onsetSharpnessRiseTimeMs.helixSharpeningOverGhostPct.toFixed(1)}% faster rise (+${audioSummary.singleRebuildWaveformSnrDb.helixGainDb.toFixed(2)} dB SNR)`);
+  console.log(`  Codec only (no model), pitch match: AuraGraph Tiles = ${(100 * tilePitchMatch / nTones).toFixed(1)}% vs. μ-law = ${(100 * muPitchMatch / nTones).toFixed(1)}%; tempo error: tiles ${(tileTempoErrPct / nDrums).toFixed(1)}% vs. μ-law ${(muTempoErrPct / nDrums).toFixed(1)}%`);
+  console.log(`  Regenerate 30% of whole clip, pitch match: AuraGraph Tiles = ${((genTilePitchMatch / nGenWav) * 100).toFixed(1)}% vs. μ-law = ${((genMuPitchMatch / nGenWav) * 100).toFixed(1)}%`);
+  console.log(`  Regenerate 30% of whole clip, tempo error: AuraGraph Tiles = ${(genTileTempoErr / nGenWav).toFixed(1)}% vs. μ-law = ${(genMuTempoErr / nGenWav).toFixed(1)}%`);
+  console.log(`  Codec only (no model), mean onset rise time (10%->90%, lower is sharper):`);
+  console.log(`    Path A (8-bit μ-law):              ${audioSummary.codecOnlyOnsetRiseTimeMs.muLawMs.toFixed(2)} ms`);
+  console.log(`    Path B (AuraGraph + Helix):        ${audioSummary.codecOnlyOnsetRiseTimeMs.auraTileHelixMs.toFixed(2)} ms`);
+  console.log(`    Path B (AuraGraph + Ghost):        ${audioSummary.codecOnlyOnsetRiseTimeMs.auraTileGhostMs.toFixed(2)} ms`);
+  console.log(`    Helix onset sharpening vs. Ghost:  ${audioSummary.codecOnlyOnsetRiseTimeMs.helixSharpeningOverGhostPct.toFixed(1)}% faster rise (+${audioSummary.codecOnlyWaveformSnrDb.helixGainDb.toFixed(2)} dB SNR)`);
 
   results.audioComparison = audioSummary;
 
@@ -636,9 +630,9 @@ async function main() {
       fabulaKB: Math.round(fabulaBytes / 1024),
       msPerStepSimd: Number(msPerStepDesktop.toFixed(2)),
       msPerStepJS: Number(msPerStepJS.toFixed(2)),
-      msPerStepPhoneThrottled4x: Number((msPerStepJS * 4.0).toFixed(2)),
+      msPerStepPhoneEstimate_JSx4_notMeasured: Number((msPerStepJS * 4.0).toFixed(2)),
       msPerSampleDesktop: Number(msPerSampleDesktop.toFixed(2)),
-      msPerSamplePhoneThrottled4x: Number((msPerSampleDesktop * 4.0).toFixed(2)),
+      msPerSamplePhoneEstimate_x4_notMeasured: Number((msPerSampleDesktop * 4.0).toFixed(2)),
     };
     console.log(
       `  Preset ${presetKey.toUpperCase().padEnd(8)} Params=${params.toLocaleString().padStart(9)} | .fabula=${speedBench[presetKey].fabulaKB} KB | Step(SIMD)=${speedBench[presetKey].msPerStepSimd}ms | Step(JS)=${speedBench[presetKey].msPerStepJS}ms | Sample=${speedBench[presetKey].msPerSampleDesktop}ms`
