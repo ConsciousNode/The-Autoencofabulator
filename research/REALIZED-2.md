@@ -1,5 +1,7 @@
 # The Autoencofabulator v0.4 ("Learned") — Empirical Realization Report (`REALIZED-2`)
 
+> **[Kehai audit 2026-11-05]** Headline numbers reproduce exactly and no test-set peeking was found. Caveats: the gate is post-hoc calibrated on val, not learned; "transformer alone" includes a learned hashed-context table; and BMP LCS plus one duplicated C held-out doc weaken two memorisation/held-out numbers. See [`AUDIT-2.md`](AUDIT-2.md).
+
 Every figure in this report is produced deterministically by a named Node script in `tests/` (`node tests/train-sherlock.js`, `node tests/audit-v03.js`, `node tests/metrics.js`, `node tests/determinism.js`, and `node tests/gradcheck.js`) running directly against the single-file `index.html` engine with zero external dependencies, zero training-data copying (`noExemplarAnchors: true`), and model-only `repairByRemasking`.
 
 ---

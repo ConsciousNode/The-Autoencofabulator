@@ -378,7 +378,7 @@ async function main() {
   const valAll878 = evaluateSimultaneous(model, trainMem, val, tagIds, { windowSize: 64, allWindows: true, seed: 777 });
 
   console.log(`  Val Count Memory Alone:                           ${step0Val24.memBpb.toFixed(4)} bpb (all 878w: ${valAll878.memBpb.toFixed(4)} bpb)`);
-  console.log(`  (b) Residual (alpha=1.00, gate=0.45):             tf-only=${ablResidual.tfBpb.toFixed(4)}, full=${ablResidual.fullBpb.toFixed(4)} bpb`);
+  console.log(`  (b) Residual (alpha=0.54, gate=0.60):             tf-only=${ablResidual.tfBpb.toFixed(4)}, full=${ablResidual.fullBpb.toFixed(4)} bpb`);
   console.log(`  (c) Log-Linear Mixture (alpha=${bestMixAlpha}, gate=${bestMixGate}):   tf-only=${bestMixTfVal.toFixed(4)}, full=${bestMixFullVal.toFixed(4)} bpb`);
   console.log(`  (a) Per-Position Hidden Gate + Calibrated Scale:  tf-only=${bestPosEv.tfBpb.toFixed(4)}, full=${bestPosEv.fullBpb.toFixed(4)} bpb  <-- SELECTED ON VAL`);
   console.log(`  Selected Model on ALL 878 Val Windows (64B):      tf-only=${valAll878.tfBpb.toFixed(4)}, full=${valAll878.fullBpb.toFixed(4)} (vs mem-only ${valAll878.memBpb.toFixed(4)})`);
