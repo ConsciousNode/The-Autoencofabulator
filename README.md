@@ -2,6 +2,7 @@
 
 
 > **Audit (2026-11-05):** v0.4 results reproduce; see [`research/AUDIT-2.md`](research/AUDIT-2.md) for caveats.
+
 **One model that learns any file in a single zero-dependency browser tab — now with a transformer that genuinely learns, 5.4× faster resident-weight SIMD WASM kernels, fast typed-array bilateral context memory, and honest held-out evaluation.**
 
 ---
